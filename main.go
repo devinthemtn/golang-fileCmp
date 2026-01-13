@@ -55,9 +55,10 @@ Examples:
   %s /path/to/file             # Load left file, input right path in TUI
 
 Interactive Controls:
-  Tab              Switch between input fields
-  Enter            Load entered path
-  ↑/↓              Navigate file list
+  Tab              Switch between input fields / Navigate suggestions
+  Enter            Load entered path / Accept suggestion
+  ↑/↓              Navigate file list / Navigate suggestions
+  Esc              Clear suggestions
   Ctrl+D           Start diff comparison
   j/k              Navigate diff (vim-style)
   n/p              Next/previous file
@@ -68,9 +69,12 @@ Interactive Controls:
 
 The tool will automatically find common files between directories
 and highlight differences with colors:
-  - Green background: Added lines
-  - Blue background:  Deleted lines
+  - Blue background: Added lines
+  - Red background:  Deleted lines
   - Gray text:        Unchanged lines
+
+Path suggestions appear automatically as you type file paths,
+making it easy to navigate your filesystem and select files.
 
 `, os.Args[0], os.Args[0], os.Args[0], os.Args[0], os.Args[0])
 }

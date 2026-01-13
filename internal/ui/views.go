@@ -5,6 +5,8 @@ import (
 	"strings"
 
 	"golang-fileCmp/internal/differ"
+
+	"github.com/charmbracelet/lipgloss"
 )
 
 // renderFileSelectView renders the file selection interface
@@ -12,31 +14,65 @@ func (m *Model) renderFileSelectView() string {
 	var b strings.Builder
 
 	// Title
-	title := titleStyle.Render("File Comparison Tool")
+	title := titleStyle.Width(m.windowWidth - 2).Render("File Comparison Tool")
 	b.WriteString(title)
 	b.WriteString("\n\n")
 
-	// Input fields
+	// Input fields - adapt width to terminal
+	maxInputWidth := m.windowWidth - 20 // Leave space for labels and padding
+	if maxInputWidth < 30 {
+		maxInputWidth = 30
+	}
+
 	leftLabel := "Left Path: "
 	rightLabel := "Right Path: "
 
+	// Truncate input display if too long
+	leftDisplay := m.inputLeft
+	rightDisplay := m.inputRight
+	if len(leftDisplay) > maxInputWidth {
+		leftDisplay = "..." + leftDisplay[len(leftDisplay)-maxInputWidth+3:]
+	}
+	if len(rightDisplay) > maxInputWidth {
+		rightDisplay = "..." + rightDisplay[len(rightDisplay)-maxInputWidth+3:]
+	}
+
 	var leftInput, rightInput string
 	if m.focusLeft {
-		leftInput = focusedInputStyle.Render(m.inputLeft + "│")
-		rightInput = inputStyle.Render(m.inputRight)
+		leftInput = focusedInputStyle.Width(maxInputWidth).Render(leftDisplay + "│")
+		rightInput = inputStyle.Width(maxInputWidth).Render(rightDisplay)
 	} else {
-		leftInput = inputStyle.Render(m.inputLeft)
-		rightInput = focusedInputStyle.Render(m.inputRight + "│")
+		leftInput = inputStyle.Width(maxInputWidth).Render(leftDisplay)
+		rightInput = focusedInputStyle.Width(maxInputWidth).Render(rightDisplay + "│")
 	}
 
 	b.WriteString(leftLabel + leftInput)
 	b.WriteString("\n")
-	b.WriteString(rightLabel + rightInput)
-	b.WriteString("\n\n")
 
-	// Status information
+	// Show suggestions for left path if focused and available
+	if m.focusLeft && m.showSuggestions && len(m.leftSuggestions) > 0 {
+		b.WriteString(m.renderSuggestions(m.leftSuggestions, m.leftSuggIndex))
+		b.WriteString("\n")
+	}
+
+	b.WriteString(rightLabel + rightInput)
+	b.WriteString("\n")
+
+	// Show suggestions for right path if focused and available
+	if !m.focusLeft && m.showSuggestions && len(m.rightSuggestions) > 0 {
+		b.WriteString(m.renderSuggestions(m.rightSuggestions, m.rightSuggIndex))
+		b.WriteString("\n")
+	}
+
+	b.WriteString("\n")
+
+	// Status information - truncate paths if too long
 	if m.leftFile != nil {
-		b.WriteString(fmt.Sprintf("✓ Left: %s ", m.leftPath))
+		leftPath := m.leftPath
+		if len(leftPath) > maxInputWidth {
+			leftPath = "..." + leftPath[len(leftPath)-maxInputWidth+3:]
+		}
+		b.WriteString(fmt.Sprintf("✓ Left: %s ", leftPath))
 		if m.leftFile.IsDir {
 			b.WriteString("(directory)")
 		} else {
@@ -46,7 +82,11 @@ func (m *Model) renderFileSelectView() string {
 	}
 
 	if m.rightFile != nil {
-		b.WriteString(fmt.Sprintf("✓ Right: %s ", m.rightPath))
+		rightPath := m.rightPath
+		if len(rightPath) > maxInputWidth {
+			rightPath = "..." + rightPath[len(rightPath)-maxInputWidth+3:]
+		}
+		b.WriteString(fmt.Sprintf("✓ Right: %s ", rightPath))
 		if m.rightFile.IsDir {
 			b.WriteString("(directory)")
 		} else {
@@ -63,13 +103,33 @@ func (m *Model) renderFileSelectView() string {
 	// Error message
 	if m.errorMsg != "" {
 		b.WriteString("\n")
-		b.WriteString(errorStyle.Render("Error: " + m.errorMsg))
+		errorMsg := m.errorMsg
+		if len(errorMsg) > m.windowWidth-20 {
+			errorMsg = errorMsg[:m.windowWidth-23] + "..."
+		}
+		b.WriteString(errorStyle.Width(m.windowWidth - 4).Render("Error: " + errorMsg))
 		b.WriteString("\n")
 	}
 
-	// Help text
+	// Help text - adapt to width
 	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("Tab: Switch input • Enter: Load path • ↑↓: Select file • Ctrl+D: Compare • ?: Help • Q: Quit"))
+	var helpText string
+	if m.showSuggestions {
+		if m.windowWidth > 80 {
+			helpText = "↑↓: Navigate suggestions • Tab: Next suggestion • Enter: Accept • Esc: Cancel"
+		} else {
+			helpText = "↑↓: Navigate • Tab: Next • Enter: Accept • Esc: Cancel"
+		}
+	} else {
+		if m.windowWidth > 80 {
+			helpText = "Tab: Switch input • Enter: Load path • ↑↓: Select file • Ctrl+D: Compare • ?: Help • Q: Quit"
+		} else if m.windowWidth > 60 {
+			helpText = "Tab: Switch • Enter: Load • ↑↓: Select • Ctrl+D: Compare • ?: Help • Q: Quit"
+		} else {
+			helpText = "Tab:Switch Enter:Load ↑↓:Select Ctrl+D:Compare ?:Help Q:Quit"
+		}
+	}
+	b.WriteString(helpStyle.Width(m.windowWidth - 2).Render(helpText))
 
 	return b.String()
 }
@@ -80,17 +140,133 @@ func (m *Model) renderFileList() string {
 		return ""
 	}
 
-	var items []string
+	// Define styles for file status indicators
+	identicalStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#00FF00")).Bold(true) // Green
+	differentStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#FF0000")).Bold(true) // Red
+	sizeStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#888888"))                 // Gray
+
+	// Calculate available space for file list
+	usedHeight := 15 // Approximate height used by title, inputs, status, help
+	if m.showSuggestions {
+		usedHeight += 10 // More space used by suggestions
+	}
+	if m.errorMsg != "" {
+		usedHeight += 3 // Space for error message
+	}
+
+	availableHeight := m.windowHeight - usedHeight
+	if availableHeight < 5 {
+		availableHeight = 5
+	}
+
+	// Get all files and sort them for consistent ordering
+	allFiles := make([]string, 0, len(m.commonFiles))
 	for relPath := range m.commonFiles {
+		allFiles = append(allFiles, relPath)
+	}
+	// Sort files alphabetically
+	for i := 0; i < len(allFiles)-1; i++ {
+		for j := i + 1; j < len(allFiles); j++ {
+			if allFiles[i] > allFiles[j] {
+				allFiles[i], allFiles[j] = allFiles[j], allFiles[i]
+			}
+		}
+	}
+
+	// Find current selection index
+	selectedIndex := 0
+	for i, relPath := range allFiles {
 		if relPath == m.selectedFile {
-			items = append(items, selectedFileStyle.Render("→ "+relPath))
+			selectedIndex = i
+			break
+		}
+	}
+
+	// Calculate scroll offset to keep selected item visible
+	startIndex := 0
+	if len(allFiles) > availableHeight {
+		startIndex = selectedIndex - availableHeight/2
+		if startIndex < 0 {
+			startIndex = 0
+		}
+		if startIndex+availableHeight > len(allFiles) {
+			startIndex = len(allFiles) - availableHeight
+		}
+	}
+
+	endIndex := startIndex + availableHeight
+	if endIndex > len(allFiles) {
+		endIndex = len(allFiles)
+	}
+
+	// Calculate max width for file display
+	maxFileWidth := m.windowWidth - 8 // Account for borders and padding
+
+	var items []string
+	for i := startIndex; i < endIndex; i++ {
+		relPath := allFiles[i]
+		filePair := m.commonFiles[relPath]
+		leftFile := filePair[0]
+		rightFile := filePair[1]
+
+		// Check if files are identical
+		isIdentical := leftFile.Content == rightFile.Content
+		var statusIndicator string
+		if isIdentical {
+			statusIndicator = identicalStyle.Render("✓")
 		} else {
-			items = append(items, "  "+relPath)
+			statusIndicator = differentStyle.Render("✗")
+		}
+
+		// Format file size (show left file size, or both if different)
+		var sizeInfo string
+		if leftFile.Size == rightFile.Size {
+			sizeInfo = sizeStyle.Render(fmt.Sprintf("(%s)", formatFileSize(leftFile.Size)))
+		} else {
+			sizeInfo = sizeStyle.Render(fmt.Sprintf("(L:%s R:%s)", formatFileSize(leftFile.Size), formatFileSize(rightFile.Size)))
+		}
+
+		// Truncate filename if too long
+		displayPath := relPath
+		baseWidth := 4 + len(sizeInfo) // Account for indicator and size
+		if len(displayPath) > maxFileWidth-baseWidth {
+			maxPathWidth := maxFileWidth - baseWidth - 3 // Account for "..."
+			if maxPathWidth > 0 {
+				displayPath = "..." + displayPath[len(displayPath)-maxPathWidth:]
+			}
+		}
+
+		fileDisplay := fmt.Sprintf("%s %s %s", statusIndicator, displayPath, sizeInfo)
+
+		if relPath == m.selectedFile {
+			items = append(items, selectedFileStyle.Width(maxFileWidth).Render("→ "+fileDisplay))
+		} else {
+			items = append(items, "  "+fileDisplay)
 		}
 	}
 
 	content := strings.Join(items, "\n")
-	return fileListStyle.Render(content)
+
+	// Add scroll indicator if needed
+	if len(allFiles) > availableHeight {
+		scrollInfo := fmt.Sprintf("\nShowing %d-%d of %d files", startIndex+1, endIndex, len(allFiles))
+		content += helpStyle.Render(scrollInfo)
+	}
+
+	return fileListStyle.Width(m.windowWidth - 4).Height(availableHeight + 2).Render(content)
+}
+
+// formatFileSize formats file size in human readable format
+func formatFileSize(size int64) string {
+	if size < 1024 {
+		return fmt.Sprintf("%dB", size)
+	} else if size < 1024*1024 {
+		return fmt.Sprintf("%.1fKB", float64(size)/1024)
+	} else if size < 1024*1024*1024 {
+		return fmt.Sprintf("%.1fMB", float64(size)/(1024*1024))
+	} else {
+		return fmt.Sprintf("%.1fGB", float64(size)/(1024*1024*1024))
+	}
 }
 
 // renderDiffView renders the diff comparison view
@@ -101,25 +277,46 @@ func (m *Model) renderDiffView() string {
 
 	var b strings.Builder
 
-	// Header with file names
-	header := fmt.Sprintf("%s vs %s", m.currentDiff.LeftFile, m.currentDiff.RightFile)
-	b.WriteString(headerStyle.Render(header))
+	// Header with file names - truncate if too long
+	leftFile := m.currentDiff.LeftFile
+	rightFile := m.currentDiff.RightFile
+	maxFileNameWidth := (m.windowWidth - 4) / 2 // Split width for both names
+	if len(leftFile) > maxFileNameWidth {
+		leftFile = "..." + leftFile[len(leftFile)-maxFileNameWidth+3:]
+	}
+	if len(rightFile) > maxFileNameWidth {
+		rightFile = "..." + rightFile[len(rightFile)-maxFileNameWidth+3:]
+	}
+
+	header := fmt.Sprintf("%s vs %s", leftFile, rightFile)
+	b.WriteString(headerStyle.Width(m.windowWidth).Render(header))
 	b.WriteString("\n\n")
 
 	// Stats
 	equal, inserted, deleted := m.currentDiff.GetStats()
-	stats := fmt.Sprintf("Lines: %d equal, %d inserted (+), %d deleted (-)",
-		equal, inserted, deleted)
-	b.WriteString(helpStyle.Render(stats))
+	var stats string
+	if m.windowWidth > 60 {
+		stats = fmt.Sprintf("Lines: %d equal, %d inserted (+), %d deleted (-)", equal, inserted, deleted)
+	} else {
+		stats = fmt.Sprintf("%d equal, %d added, %d deleted", equal, inserted, deleted)
+	}
+	b.WriteString(helpStyle.Width(m.windowWidth).Render(stats))
 	b.WriteString("\n\n")
 
 	// Diff content
 	b.WriteString(m.renderDiffContent())
 
-	// Navigation help
+	// Navigation help - adapt to width
 	b.WriteString("\n")
-	help := "↑↓/j/k: Navigate • g/G: Top/Bottom • n/p: Next/Prev file • Esc: Back • ?: Help • Q: Quit"
-	b.WriteString(helpStyle.Render(help))
+	var helpText string
+	if m.windowWidth > 80 {
+		helpText = "↑↓/j/k: Navigate • g/G: Top/Bottom • n/p: Next/Prev file • Esc: Back • ?: Help • Q: Quit"
+	} else if m.windowWidth > 60 {
+		helpText = "↑↓/j/k: Navigate • g/G: Top/Bottom • n/p: Files • Esc: Back • ?: Help • Q: Quit"
+	} else {
+		helpText = "↑↓:Nav g/G:Top/Bot n/p:Files Esc:Back ?:Help Q:Quit"
+	}
+	b.WriteString(helpStyle.Width(m.windowWidth).Render(helpText))
 
 	return b.String()
 }
@@ -132,6 +329,9 @@ func (m *Model) renderDiffContent() string {
 
 	var b strings.Builder
 	maxVisible := m.windowHeight - 10 // Account for header, stats, and help text
+	if maxVisible < 5 {
+		maxVisible = 5
+	}
 
 	start := m.scrollOffset
 	end := start + maxVisible
@@ -151,19 +351,24 @@ func (m *Model) renderDiffContent() string {
 		content := line.Content
 
 		// Truncate long lines to fit screen width
-		maxContentWidth := m.windowWidth - 20 // Account for prefix and line numbers
-		if maxContentWidth > 0 && len(content) > maxContentWidth {
+		maxContentWidth := m.windowWidth - 12 // Account for prefix, line numbers, and padding
+		if maxContentWidth < 20 {
+			maxContentWidth = 20
+		}
+		if len(content) > maxContentWidth {
 			content = content[:maxContentWidth-3] + "..."
 		}
 
 		var renderedLine string
+		lineText := fmt.Sprintf("%s%s %s", prefix, lineNum, content)
+
 		switch line.Type {
 		case differ.DiffEqual:
-			renderedLine = equalLineStyle.Render(fmt.Sprintf("%s%s %s", prefix, lineNum, content))
+			renderedLine = equalLineStyle.Width(m.windowWidth - 2).Render(lineText)
 		case differ.DiffInsert:
-			renderedLine = insertLineStyle.Render(fmt.Sprintf("%s%s +%s", prefix, lineNum, content))
+			renderedLine = insertLineStyle.Width(m.windowWidth - 2).Render(fmt.Sprintf("%s%s +%s", prefix, lineNum, content))
 		case differ.DiffDelete:
-			renderedLine = deleteLineStyle.Render(fmt.Sprintf("%s%s -%s", prefix, lineNum, content))
+			renderedLine = deleteLineStyle.Width(m.windowWidth - 2).Render(fmt.Sprintf("%s%s -%s", prefix, lineNum, content))
 		}
 
 		b.WriteString(renderedLine)
@@ -172,8 +377,13 @@ func (m *Model) renderDiffContent() string {
 
 	// Show scroll indicator if needed
 	if len(m.currentDiff.Lines) > maxVisible {
-		scrollInfo := fmt.Sprintf("Showing %d-%d of %d lines", start+1, end, len(m.currentDiff.Lines))
-		b.WriteString(helpStyle.Render(scrollInfo))
+		var scrollInfo string
+		if m.windowWidth > 50 {
+			scrollInfo = fmt.Sprintf("Showing %d-%d of %d lines", start+1, end, len(m.currentDiff.Lines))
+		} else {
+			scrollInfo = fmt.Sprintf("%d-%d of %d", start+1, end, len(m.currentDiff.Lines))
+		}
+		b.WriteString(helpStyle.Width(m.windowWidth).Render(scrollInfo))
 		b.WriteString("\n")
 	}
 
@@ -189,12 +399,20 @@ func (m *Model) renderHelpView() string {
 	b.WriteString("\n\n")
 
 	help := `File Selection Mode:
-  Tab              Switch between left/right input fields
-  Enter            Load the entered path (file or directory)
-  ↑/↓              Navigate through common files list
+  Tab              Switch between left/right input fields (or cycle suggestions)
+  Enter            Load the entered path / Accept selected suggestion
+  ↑/↓              Navigate through common files list / Navigate suggestions
+  Esc              Clear path suggestions
   Ctrl+D           Start comparing selected files
   ?                Show this help screen
   Q/Ctrl+C         Quit application
+
+Path Suggestions:
+  Type any path    Smart suggestions appear automatically
+  ↑/↓              Navigate through suggestions
+  Tab              Cycle to next suggestion
+  Enter            Accept selected suggestion
+  Esc              Cancel suggestions
 
 Diff View Mode:
   ↑/↓ or j/k       Navigate through diff lines
@@ -212,15 +430,18 @@ Color Legend:
 	b.WriteString(help)
 
 	// Color examples
-	b.WriteString(insertLineStyle.Render("Green background: Added lines (+)"))
+	b.WriteString(insertLineStyle.Render("Blue background: Added lines (+)"))
 	b.WriteString("\n")
-	b.WriteString(deleteLineStyle.Render("Blue background: Deleted lines (-)"))
+	b.WriteString(deleteLineStyle.Render("Red background: Deleted lines (-)"))
 	b.WriteString("\n")
 	b.WriteString(equalLineStyle.Render("Gray text: Unchanged lines"))
 	b.WriteString("\n\n")
 
 	instructions := `Instructions:
 1. Enter paths to files or directories in the input fields
+   - Path suggestions appear automatically as you type
+   - Use ↑/↓ or Tab to navigate through suggestions
+   - Press Enter to accept a suggestion or Esc to dismiss
 2. Press Enter to load each path
 3. Use ↑/↓ to select which common file to compare
 4. Press Ctrl+D to start comparing
@@ -228,11 +449,60 @@ Color Legend:
 6. Use n/p to switch between different files
 
 Note: Only text files will be compared. The tool automatically
-detects common text file extensions and filenames.`
+detects common text file extensions and filenames. Path suggestions
+include files and directories from your current working directory.`
 
 	b.WriteString(instructions)
 	b.WriteString("\n\n")
 	b.WriteString(helpStyle.Render("Press Esc or ? to return to previous view"))
 
 	return b.String()
+}
+
+// renderSuggestions renders path suggestions
+func (m *Model) renderSuggestions(suggestions []string, selectedIndex int) string {
+	if len(suggestions) == 0 {
+		return ""
+	}
+
+	// Limit suggestions based on available space
+	maxSuggestions := 6
+	availableHeight := m.windowHeight - 20
+	if availableHeight > 0 && availableHeight < maxSuggestions {
+		maxSuggestions = availableHeight
+	}
+	if maxSuggestions < 3 {
+		maxSuggestions = 3
+	}
+
+	displaySuggestions := suggestions
+	if len(displaySuggestions) > maxSuggestions {
+		displaySuggestions = displaySuggestions[:maxSuggestions]
+	}
+
+	maxSuggestionWidth := m.windowWidth - 10
+	if maxSuggestionWidth < 30 {
+		maxSuggestionWidth = 30
+	}
+
+	var suggestionLines []string
+	for i, suggestion := range displaySuggestions {
+		// Truncate suggestion if too long
+		displaySuggestion := suggestion
+		if len(displaySuggestion) > maxSuggestionWidth {
+			displaySuggestion = "..." + displaySuggestion[len(displaySuggestion)-maxSuggestionWidth+3:]
+		}
+
+		if i == selectedIndex && selectedIndex < len(displaySuggestions) {
+			suggestionLines = append(suggestionLines, selectedSuggestionStyle.Width(maxSuggestionWidth).Render("  → "+displaySuggestion))
+		} else {
+			suggestionLines = append(suggestionLines, "    "+displaySuggestion)
+		}
+	}
+
+	content := strings.Join(suggestionLines, "\n")
+	if len(suggestions) > maxSuggestions {
+		content += helpStyle.Render(fmt.Sprintf("\n... and %d more", len(suggestions)-maxSuggestions))
+	}
+	return suggestionStyle.Width(m.windowWidth - 4).Render(content)
 }

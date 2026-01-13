@@ -2,6 +2,10 @@ package ui
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
 
 	"golang-fileCmp/internal/differ"
 	"golang-fileCmp/internal/file"
@@ -27,12 +31,13 @@ type Model struct {
 	windowHeight int
 
 	// File selection
-	leftPath     string
-	rightPath    string
-	leftFile     *file.FileInfo
-	rightFile    *file.FileInfo
-	commonFiles  map[string][2]*file.FileInfo
-	selectedFile string
+	leftPath       string
+	rightPath      string
+	leftFile       *file.FileInfo
+	rightFile      *file.FileInfo
+	commonFiles    map[string][2]*file.FileInfo
+	selectedFile   string
+	fileListScroll int
 
 	// Diff view
 	currentDiff  *differ.FileDiff
@@ -49,6 +54,13 @@ type Model struct {
 	focusLeft   bool
 	showingHelp bool
 	errorMsg    string
+
+	// Path suggestions
+	leftSuggestions  []string
+	rightSuggestions []string
+	leftSuggIndex    int
+	rightSuggIndex   int
+	showSuggestions  bool
 }
 
 // Styles for the UI
@@ -79,12 +91,12 @@ var (
 
 	insertLineStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#FFFFFF")).
-			Background(lipgloss.Color("#008000")).
+			Background(lipgloss.Color("#0000FF")).
 			Bold(true)
 
 	deleteLineStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#FFFFFF")).
-			Background(lipgloss.Color("#0000FF")).
+			Background(lipgloss.Color("#FF0000")).
 			Bold(true)
 
 	errorStyle = lipgloss.NewStyle().
@@ -106,16 +118,30 @@ var (
 				Background(lipgloss.Color("#7D56F4")).
 				Foreground(lipgloss.Color("#FFFFFF")).
 				Bold(true)
+
+	suggestionStyle = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("#888888")).
+			Padding(0, 1).
+			MaxWidth(80)
+
+	selectedSuggestionStyle = lipgloss.NewStyle().
+				Background(lipgloss.Color("#DDDDDD")).
+				Foreground(lipgloss.Color("#000000"))
 )
 
 // New creates a new model
 func New() *Model {
 	return &Model{
-		viewMode:    ViewModeFileSelect,
-		fileManager: file.New(),
-		differ:      differ.New(),
-		focusLeft:   true,
-		commonFiles: make(map[string][2]*file.FileInfo),
+		viewMode:        ViewModeFileSelect,
+		fileManager:     file.New(),
+		differ:          differ.New(),
+		focusLeft:       true,
+		commonFiles:     make(map[string][2]*file.FileInfo),
+		leftSuggIndex:   -1,
+		rightSuggIndex:  -1,
+		showSuggestions: false,
+		fileListScroll:  0,
 	}
 }
 
@@ -173,10 +199,35 @@ func (m *Model) handleFileSelectKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 
 	case "tab":
+		// If suggestions are showing and we have suggestions, cycle through them
+		if m.showSuggestions {
+			if m.focusLeft && len(m.leftSuggestions) > 0 {
+				m.leftSuggIndex = (m.leftSuggIndex + 1) % len(m.leftSuggestions)
+				return m, nil
+			} else if !m.focusLeft && len(m.rightSuggestions) > 0 {
+				m.rightSuggIndex = (m.rightSuggIndex + 1) % len(m.rightSuggestions)
+				return m, nil
+			}
+		}
 		m.focusLeft = !m.focusLeft
+		m.clearSuggestions()
 		return m, nil
 
 	case "enter":
+		// If suggestions are showing, accept the selected suggestion
+		if m.showSuggestions {
+			if m.focusLeft && len(m.leftSuggestions) > 0 && m.leftSuggIndex >= 0 {
+				m.inputLeft = m.leftSuggestions[m.leftSuggIndex]
+				m.clearSuggestions()
+				return m, nil
+			} else if !m.focusLeft && len(m.rightSuggestions) > 0 && m.rightSuggIndex >= 0 {
+				m.inputRight = m.rightSuggestions[m.rightSuggIndex]
+				m.clearSuggestions()
+				return m, nil
+			}
+		}
+
+		// Load the path
 		if m.focusLeft {
 			if m.inputLeft != "" {
 				m.leftPath = m.inputLeft
@@ -188,6 +239,7 @@ func (m *Model) handleFileSelectKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.loadRightPath()
 			}
 		}
+		m.clearSuggestions()
 		m.updateCommonFiles()
 		return m, nil
 
@@ -203,18 +255,6 @@ func (m *Model) handleFileSelectKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case "up":
-		if len(m.commonFiles) > 0 {
-			m.selectPreviousFile()
-		}
-		return m, nil
-
-	case "down":
-		if len(m.commonFiles) > 0 {
-			m.selectNextFile()
-		}
-		return m, nil
-
 	case "?":
 		m.viewMode = ViewModeHelp
 		return m, nil
@@ -223,11 +263,55 @@ func (m *Model) handleFileSelectKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.focusLeft {
 			if len(m.inputLeft) > 0 {
 				m.inputLeft = m.inputLeft[:len(m.inputLeft)-1]
+				m.updateSuggestions()
 			}
 		} else {
 			if len(m.inputRight) > 0 {
 				m.inputRight = m.inputRight[:len(m.inputRight)-1]
+				m.updateSuggestions()
 			}
+		}
+		return m, nil
+
+	case "esc":
+		m.clearSuggestions()
+		return m, nil
+
+	case "up":
+		if m.showSuggestions {
+			if m.focusLeft && len(m.leftSuggestions) > 0 {
+				if m.leftSuggIndex <= 0 {
+					m.leftSuggIndex = len(m.leftSuggestions) - 1
+				} else {
+					m.leftSuggIndex--
+				}
+				return m, nil
+			} else if !m.focusLeft && len(m.rightSuggestions) > 0 {
+				if m.rightSuggIndex <= 0 {
+					m.rightSuggIndex = len(m.rightSuggestions) - 1
+				} else {
+					m.rightSuggIndex--
+				}
+				return m, nil
+			}
+		}
+		if len(m.commonFiles) > 0 {
+			m.selectPreviousFile()
+		}
+		return m, nil
+
+	case "down":
+		if m.showSuggestions {
+			if m.focusLeft && len(m.leftSuggestions) > 0 {
+				m.leftSuggIndex = (m.leftSuggIndex + 1) % len(m.leftSuggestions)
+				return m, nil
+			} else if !m.focusLeft && len(m.rightSuggestions) > 0 {
+				m.rightSuggIndex = (m.rightSuggIndex + 1) % len(m.rightSuggestions)
+				return m, nil
+			}
+		}
+		if len(m.commonFiles) > 0 {
+			m.selectNextFile()
 		}
 		return m, nil
 
@@ -239,6 +323,7 @@ func (m *Model) handleFileSelectKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			} else {
 				m.inputRight += msg.String()
 			}
+			m.updateSuggestions()
 		}
 		return m, nil
 	}
@@ -345,7 +430,46 @@ func (m *Model) loadRightPath() {
 func (m *Model) updateCommonFiles() {
 	if m.leftFile != nil && m.rightFile != nil {
 		m.commonFiles = file.FindCommonFiles(m.leftFile, m.rightFile)
+		m.fileListScroll = 0 // Reset scroll when files change
+
+		// Select first file by default if none selected
+		if len(m.commonFiles) > 0 && m.selectedFile == "" {
+			files := m.getSortedFiles()
+			if len(files) > 0 {
+				m.selectedFile = files[0]
+			}
+		}
+
+		// Ensure selected file still exists in the new common files
+		if m.selectedFile != "" {
+			if _, exists := m.commonFiles[m.selectedFile]; !exists {
+				files := m.getSortedFiles()
+				if len(files) > 0 {
+					m.selectedFile = files[0]
+				} else {
+					m.selectedFile = ""
+				}
+			}
+		}
 	}
+}
+
+func (m *Model) getSortedFiles() []string {
+	files := make([]string, 0, len(m.commonFiles))
+	for relPath := range m.commonFiles {
+		files = append(files, relPath)
+	}
+
+	// Sort files alphabetically for consistent ordering
+	for i := 0; i < len(files)-1; i++ {
+		for j := i + 1; j < len(files); j++ {
+			if files[i] > files[j] {
+				files[i], files[j] = files[j], files[i]
+			}
+		}
+	}
+
+	return files
 }
 
 func (m *Model) selectNextFile() {
@@ -353,10 +477,7 @@ func (m *Model) selectNextFile() {
 		return
 	}
 
-	files := make([]string, 0, len(m.commonFiles))
-	for relPath := range m.commonFiles {
-		files = append(files, relPath)
-	}
+	files := m.getSortedFiles()
 
 	currentIndex := -1
 	for i, f := range files {
@@ -378,10 +499,7 @@ func (m *Model) selectPreviousFile() {
 		return
 	}
 
-	files := make([]string, 0, len(m.commonFiles))
-	for relPath := range m.commonFiles {
-		files = append(files, relPath)
-	}
+	files := m.getSortedFiles()
 
 	currentIndex := -1
 	for i, f := range files {
@@ -443,4 +561,106 @@ func (m *Model) SetRightPath(path string) {
 	m.rightPath = path
 	m.loadRightPath()
 	m.updateCommonFiles()
+}
+
+// Path suggestion methods
+
+func (m *Model) updateSuggestions() {
+	if m.focusLeft {
+		m.leftSuggestions = m.generateSuggestions(m.inputLeft)
+		m.leftSuggIndex = 0
+		if len(m.leftSuggestions) == 0 {
+			m.leftSuggIndex = -1
+		}
+	} else {
+		m.rightSuggestions = m.generateSuggestions(m.inputRight)
+		m.rightSuggIndex = 0
+		if len(m.rightSuggestions) == 0 {
+			m.rightSuggIndex = -1
+		}
+	}
+
+	m.showSuggestions = len(m.leftSuggestions) > 0 || len(m.rightSuggestions) > 0
+}
+
+func (m *Model) clearSuggestions() {
+	m.leftSuggestions = nil
+	m.rightSuggestions = nil
+	m.leftSuggIndex = -1
+	m.rightSuggIndex = -1
+	m.showSuggestions = false
+}
+
+func (m *Model) generateSuggestions(input string) []string {
+	if len(input) == 0 {
+		return nil
+	}
+
+	var suggestions []string
+
+	// Determine the directory to search and the prefix to match
+	var searchDir, prefix string
+
+	if strings.HasSuffix(input, "/") || strings.HasSuffix(input, "\\") {
+		// Input ends with separator, search in that directory
+		searchDir = input
+		prefix = ""
+	} else {
+		// Input is a partial path, split into directory and filename parts
+		searchDir = filepath.Dir(input)
+		prefix = filepath.Base(input)
+
+		if searchDir == "." && !strings.Contains(input, "/") && !strings.Contains(input, "\\") {
+			searchDir = ""
+		}
+	}
+
+	// Handle empty or current directory
+	if searchDir == "" || searchDir == "." {
+		searchDir = "."
+	}
+
+	// Read directory contents
+	entries, err := os.ReadDir(searchDir)
+	if err != nil {
+		return nil
+	}
+
+	// Filter and collect matching entries
+	for _, entry := range entries {
+		name := entry.Name()
+
+		// Skip hidden files unless explicitly requested
+		if strings.HasPrefix(name, ".") && !strings.HasPrefix(prefix, ".") {
+			continue
+		}
+
+		// Check if the name matches the prefix
+		if prefix == "" || strings.HasPrefix(strings.ToLower(name), strings.ToLower(prefix)) {
+			var suggestion string
+			if searchDir == "." {
+				suggestion = name
+			} else {
+				suggestion = filepath.Join(searchDir, name)
+			}
+
+			// Add trailing slash for directories
+			if entry.IsDir() {
+				suggestion += string(filepath.Separator)
+			}
+
+			suggestions = append(suggestions, suggestion)
+		}
+	}
+
+	// Sort suggestions
+	sort.Strings(suggestions)
+
+	// Limit number of suggestions
+	maxSuggestions := 8
+	if len(suggestions) > maxSuggestions {
+		suggestions = suggestions[:maxSuggestions]
+	}
+
+	return suggestions
 }
