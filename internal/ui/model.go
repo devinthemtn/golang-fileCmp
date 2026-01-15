@@ -22,6 +22,7 @@ const (
 	ViewModeFileSelect ViewMode = iota
 	ViewModeDiff
 	ViewModeMerge
+	ViewModeCopy
 	ViewModeHelp
 )
 
@@ -51,6 +52,10 @@ type Model struct {
 	changeSelection *merge.ChangeSelection
 	mergeTarget     string // "left" or "right"
 	mergePreview    string
+
+	// Copy view
+	copySelection map[string]bool // Maps relative path to whether to copy
+	copyTarget    string          // "to-left" or "to-right"
 
 	// Services
 	fileManager *file.Manager
@@ -175,6 +180,8 @@ func New() *Model {
 		showSuggestions: false,
 		fileListScroll:  0,
 		mergeTarget:     "left",
+		copySelection:   make(map[string]bool),
+		copyTarget:      "to-right",
 	}
 }
 
@@ -207,6 +214,8 @@ func (m *Model) View() string {
 		return m.renderDiffView()
 	case ViewModeMerge:
 		return m.renderMergeView()
+	case ViewModeCopy:
+		return m.renderCopyView()
 	case ViewModeHelp:
 		return m.renderHelpView()
 	default:
@@ -223,6 +232,8 @@ func (m *Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleDiffKeys(msg)
 	case ViewModeMerge:
 		return m.handleMergeKeys(msg)
+	case ViewModeCopy:
+		return m.handleCopyKeys(msg)
 	case ViewModeHelp:
 		return m.handleHelpKeys(msg)
 	}
@@ -452,6 +463,14 @@ func (m *Model) handleDiffKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m, nil
+
+	case "c":
+		// Enter copy mode if we have files loaded
+		if len(m.allFiles) > 0 && m.hasUniqueFiles() {
+			m.initializeCopyMode()
+			m.viewMode = ViewModeCopy
+		}
+		return m, nil
 	}
 
 	return m, nil
@@ -534,6 +553,82 @@ func (m *Model) handleMergeKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// handleCopyKeys handles keys in copy view mode
+func (m *Model) handleCopyKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c", "q":
+		return m, tea.Quit
+
+	case "esc":
+		m.viewMode = ViewModeFileSelect
+		return m, nil
+
+	case "up", "k":
+		if m.cursor > 0 {
+			m.cursor--
+			if m.cursor < m.scrollOffset {
+				m.scrollOffset = m.cursor
+			}
+		}
+		return m, nil
+
+	case "down", "j":
+		uniqueFiles := m.getUniqueFiles()
+		if m.cursor < len(uniqueFiles)-1 {
+			m.cursor++
+			maxVisible := m.windowHeight - 12 // Account for header and footer
+			if m.cursor >= m.scrollOffset+maxVisible {
+				m.scrollOffset = m.cursor - maxVisible + 1
+			}
+		}
+		return m, nil
+
+	case " ", "enter":
+		// Toggle selection of current unique file
+		uniqueFiles := m.getUniqueFiles()
+		if m.cursor < len(uniqueFiles) {
+			relPath := uniqueFiles[m.cursor]
+			m.copySelection[relPath] = !m.copySelection[relPath]
+		}
+		return m, nil
+
+	case "a":
+		// Select all unique files
+		uniqueFiles := m.getUniqueFiles()
+		for _, relPath := range uniqueFiles {
+			m.copySelection[relPath] = true
+		}
+		return m, nil
+
+	case "n":
+		// Select no files
+		uniqueFiles := m.getUniqueFiles()
+		for _, relPath := range uniqueFiles {
+			m.copySelection[relPath] = false
+		}
+		return m, nil
+
+	case "t":
+		// Toggle copy target (to-left/to-right)
+		if m.copyTarget == "to-left" {
+			m.copyTarget = "to-right"
+		} else {
+			m.copyTarget = "to-left"
+		}
+		return m, nil
+
+	case "s":
+		// Execute copy operation
+		return m, m.executeCopyOperation()
+
+	case "?":
+		m.viewMode = ViewModeHelp
+		return m, nil
+	}
+
+	return m, nil
+}
+
 // handleHelpKeys handles keys in help view mode
 func (m *Model) handleHelpKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
@@ -542,6 +637,8 @@ func (m *Model) handleHelpKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "esc", "?":
 		if m.viewMode == ViewModeMerge {
 			m.viewMode = ViewModeMerge
+		} else if m.viewMode == ViewModeCopy {
+			m.viewMode = ViewModeCopy
 		} else if len(m.commonFiles) > 0 && m.currentDiff != nil {
 			m.viewMode = ViewModeDiff
 		} else {
@@ -908,5 +1005,122 @@ func (m *Model) saveMergedFile() tea.Cmd {
 
 		return fmt.Sprintf("Saved merged result to %s (%d changes applied, %d skipped)",
 			targetPath, result.Applied, result.Skipped)
+	}
+}
+
+// hasUniqueFiles checks if there are any files that exist in only one directory
+func (m *Model) hasUniqueFiles() bool {
+	for _, fileComp := range m.allFiles {
+		if fileComp.Source == file.SourceLeft || fileComp.Source == file.SourceRight {
+			return true
+		}
+	}
+	return false
+}
+
+// getUniqueFiles returns a sorted list of files that exist in only one directory
+func (m *Model) getUniqueFiles() []string {
+	var uniqueFiles []string
+	for relPath, fileComp := range m.allFiles {
+		if fileComp.Source == file.SourceLeft || fileComp.Source == file.SourceRight {
+			uniqueFiles = append(uniqueFiles, relPath)
+		}
+	}
+
+	// Sort files alphabetically
+	for i := 0; i < len(uniqueFiles)-1; i++ {
+		for j := i + 1; j < len(uniqueFiles); j++ {
+			if uniqueFiles[i] > uniqueFiles[j] {
+				uniqueFiles[i], uniqueFiles[j] = uniqueFiles[j], uniqueFiles[i]
+			}
+		}
+	}
+
+	return uniqueFiles
+}
+
+// initializeCopyMode sets up copy mode with default selections
+func (m *Model) initializeCopyMode() {
+	m.copySelection = make(map[string]bool)
+
+	// By default, select all unique files
+	uniqueFiles := m.getUniqueFiles()
+	for _, relPath := range uniqueFiles {
+		m.copySelection[relPath] = true
+	}
+
+	m.cursor = 0
+	m.scrollOffset = 0
+}
+
+// executeCopyOperation copies selected unique files
+func (m *Model) executeCopyOperation() tea.Cmd {
+	return func() tea.Msg {
+		copiedCount := 0
+		skippedCount := 0
+		errorCount := 0
+		var errors []string
+
+		for relPath, shouldCopy := range m.copySelection {
+			if !shouldCopy {
+				skippedCount++
+				continue
+			}
+
+			fileComp, exists := m.allFiles[relPath]
+			if !exists {
+				continue
+			}
+
+			var srcFile *file.FileInfo
+			var dstPath string
+
+			if m.copyTarget == "to-right" && fileComp.Source == file.SourceLeft {
+				// Copy from left to right
+				srcFile = fileComp.LeftFile
+				dstPath = filepath.Join(m.rightFile.Path, relPath)
+			} else if m.copyTarget == "to-left" && fileComp.Source == file.SourceRight {
+				// Copy from right to left
+				srcFile = fileComp.RightFile
+				dstPath = filepath.Join(m.leftFile.Path, relPath)
+			} else {
+				// Wrong direction or file exists in both sides
+				skippedCount++
+				continue
+			}
+
+			// Create directory if needed
+			dstDir := filepath.Dir(dstPath)
+			if err := os.MkdirAll(dstDir, 0755); err != nil {
+				errors = append(errors, fmt.Sprintf("Failed to create directory for %s: %v", relPath, err))
+				errorCount++
+				continue
+			}
+
+			// Copy file
+			if err := os.WriteFile(dstPath, []byte(srcFile.Content), 0644); err != nil {
+				errors = append(errors, fmt.Sprintf("Failed to copy %s: %v", relPath, err))
+				errorCount++
+				continue
+			}
+
+			copiedCount++
+		}
+
+		// Create result message
+		var result strings.Builder
+		result.WriteString(fmt.Sprintf("Copy operation completed: %d copied, %d skipped", copiedCount, skippedCount))
+
+		if errorCount > 0 {
+			result.WriteString(fmt.Sprintf(", %d errors", errorCount))
+			if len(errors) > 0 {
+				result.WriteString("\nErrors:\n")
+				for _, err := range errors {
+					result.WriteString("  - " + err + "\n")
+				}
+			}
+		}
+
+		return result.String()
 	}
 }

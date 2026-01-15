@@ -84,6 +84,11 @@ demo-all-files:
 	@echo "📁 Running all files demo..."
 	@./demo-all-files.sh
 
+# Demo the copy functionality for unique files
+demo-copy:
+	@echo "📋 Running copy functionality demo..."
+	@./demo-copy-files.sh
+
 # Test responsive design at different terminal widths
 test-responsive:
 	@echo "📱 Running responsive design test..."
@@ -126,6 +131,7 @@ help:
 	@echo "  demo-merge    Run comprehensive merge demo"
 	@echo "  demo-merge-simple Run simple merge demo"
 	@echo "  demo-all-files Run all files demo (common + unique)"
+	@echo "  demo-copy     Run copy functionality demo"
 	@echo "  test-responsive Test responsive design at different widths"
 	@echo "  test-width-fix Test selected file status width fix"
 	@echo "  clean         Clean build artifacts"
@@ -137,6 +143,7 @@ help:
 	@echo "  make demo               # Show demo with examples"
 	@echo "  make demo-merge         # Show merge functionality demo"
 	@echo "  make demo-all-files     # Show all files functionality demo"
+	@echo "  make demo-copy          # Show copy functionality demo"
 	@echo "  make test-responsive    # Test UI at different terminal widths"
 	@echo "  make test-width-fix     # Test selected file status width fix"
 	@echo "  make run-files          # Quick test with sample files"

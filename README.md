@@ -6,6 +6,7 @@ A powerful terminal-based user interface (TUI) application for visually comparin
 
 - 🎨 **Visual Diff Highlighting**: Green backgrounds for additions, blue backgrounds for deletions
 - 🔀 **Interactive Merge Mode**: Cherry-pick and apply specific changes between files
+- 📋 **File Copy Mode**: Easily copy unique files between directories with selective control
 - 📁 **Complete Directory Analysis**: Shows ALL files from both directories (common and unique)
 - 🏷️ **Source Identification**: Clear indicators for files that exist in only one directory
 - ⌨️ **Intuitive Controls**: Vim-like navigation (j/k) with full arrow key support
@@ -16,6 +17,7 @@ A powerful terminal-based user interface (TUI) application for visually comparin
 - 📱 **Responsive Design**: Adapts to terminal window size changes
 - 🎯 **Multi-file Navigation**: Easy switching between multiple file comparisons
 - 💾 **Selective Merging**: Save merged results with only the changes you want
+- 🔄 **Directory Synchronization**: Copy unique files between directories for easy sync
 
 ## Installation
 
@@ -77,8 +79,9 @@ make run-dirs
 #### File Selection Mode
 - **Tab**: Switch between left and right input fields
 - **Enter**: Load the entered path (file or directory)
-- **↑/↓**: Navigate through the list of common files
+- **↑/↓**: Navigate through the list of all files (common and unique)
 - **Ctrl+D**: Start comparing the selected files
+- **c**: Enter copy mode (for directories with unique files)
 - **?**: Show help screen
 - **Q/Ctrl+C**: Quit application
 
@@ -101,6 +104,17 @@ make run-dirs
 - **n**: Select no changes
 - **s**: Save merged result to file
 - **Esc**: Return to diff view
+- **?**: Show help screen
+- **Q/Ctrl+C**: Quit application
+
+#### Copy Mode (Directory Comparison Only)
+- **↑/↓** or **j/k**: Navigate through unique files
+- **Space/Enter**: Toggle selection of current file to copy
+- **t**: Switch copy target (to-left ↔ to-right)
+- **a**: Select all unique files
+- **n**: Select no files
+- **s**: Copy selected files to target directory
+- **Esc**: Return to file selection
 - **?**: Show help screen
 - **Q/Ctrl+C**: Quit application
 
@@ -163,13 +177,21 @@ The tool intelligently detects and compares 50+ text file types:
 ```bash
 ./filecmp ./project-v1 ./project-v2
 ```
-This will find all common files between the two project directories and allow you to compare them one by one.
+This will find all files from both directories and allow you to compare them, merge changes, and copy unique files.
 
 ### Interactive Mode
 ```bash
 ./filecmp
 ```
 Then enter paths interactively using the TUI.
+
+### Copy Unique Files Between Directories
+```bash
+# Compare directories and copy unique files
+./filecmp old-project/ new-project/
+# Press 'c' to enter copy mode
+# Select files to copy and press 's' to copy them
+```
 
 ## 🏗️ Architecture
 
@@ -258,6 +280,7 @@ Contributions are welcome! Areas for improvement:
 - Syntax highlighting within diffs  
 - Side-by-side view mode
 - Advanced merge conflict resolution
+- Copy operation undo/rollback
 - Export diff results
 - Configuration file support
 - Undo/redo for merge operations
@@ -271,6 +294,7 @@ Please feel free to submit issues, feature requests, or pull requests.
 - [x] Interactive merge mode with selective change application
 - [x] Complete directory analysis (all files, not just common ones)
 - [x] File source identification with clear indicators
+- [x] Copy mode for easily copying unique files between directories
 - [ ] Syntax highlighting for code diffs
 - [ ] Side-by-side comparison view
 - [ ] Three-way merge support

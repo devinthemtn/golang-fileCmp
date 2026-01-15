@@ -172,14 +172,14 @@ func (m *Model) renderFileSelectView() string {
 	} else {
 		if len(m.allFiles) > 0 {
 			// When files are loaded, emphasize the comparison functionality
-			if m.windowWidth > 90 {
-				helpText = "Tab: Switch input • Enter: Load path • ↑↓: Navigate files • Ctrl+D: Compare selected • ?: Help • Q: Quit"
-			} else if m.windowWidth > 70 {
-				helpText = "Tab: Switch • Enter: Load • ↑↓: Navigate • Ctrl+D: Compare • ?: Help • Q: Quit"
-			} else if m.windowWidth > 50 {
-				helpText = "Tab:Switch Enter:Load ↑↓:Navigate Ctrl+D:Compare ?:Help Q:Quit"
+			if m.windowWidth > 100 {
+				helpText = "Tab: Switch input • Enter: Load path • ↑↓: Navigate files • Ctrl+D: Compare • c: Copy unique files • ?: Help • Q: Quit"
+			} else if m.windowWidth > 80 {
+				helpText = "Tab: Switch • Enter: Load • ↑↓: Navigate • Ctrl+D: Compare • c: Copy • ?: Help • Q: Quit"
+			} else if m.windowWidth > 60 {
+				helpText = "Tab:Switch Enter:Load ↑↓:Navigate Ctrl+D:Compare c:Copy ?:Help Q:Quit"
 			} else {
-				helpText = "↑↓:Select Ctrl+D:Compare ?:Help Q:Quit"
+				helpText = "↑↓:Select Ctrl+D:Compare c:Copy ?:Help Q:Quit"
 			}
 		} else {
 			// When no files are loaded, emphasize the input functionality
@@ -503,6 +503,7 @@ Diff View Mode:
   n                Next common file
   p                Previous common file
   m                Enter merge mode
+  c                Enter copy mode (for unique files)
   Esc              Return to file selection
   ?                Show this help screen
   Q/Ctrl+C         Quit application
@@ -515,6 +516,17 @@ Merge Mode:
   n                Select no changes
   s                Save merged result to file
   Esc              Return to diff view
+  ?                Show this help screen
+  Q/Ctrl+C         Quit application
+
+Copy Mode (Directory Comparison Only):
+  ↑/↓ or j/k       Navigate through unique files
+  Space/Enter      Toggle selection of current file to copy
+  t                Switch copy target (to-left/to-right)
+  a                Select all unique files
+  n                Select no files
+  s                Copy selected files to target directory
+  Esc              Return to file selection
   ?                Show this help screen
   Q/Ctrl+C         Quit application
 
@@ -566,6 +578,8 @@ Color Legend:
 6. Use n/p to switch between different files
 7. Press 'm' in diff view to enter merge mode
 8. In merge mode, select which changes to apply and press 's' to save
+9. Press 'c' in file selection to enter copy mode for unique files
+10. In copy mode, select files to copy and press 's' to copy them
 
 Merge Workflow:
 - Enter merge mode from diff view with 'm'
@@ -576,10 +590,19 @@ Merge Workflow:
 - Save merged result with 's' - creates .merged file
 - Apply changes in either direction (left-to-right or right-to-left)
 
+Copy Workflow (for directories with unique files):
+- Enter copy mode from file selection with 'c'
+- Navigate with ↑/↓ or j/k through unique files
+- Toggle individual files with Space/Enter
+- Use 'a' to select all or 'n' to select none
+- Switch copy direction with 't' (to-left or to-right)
+- Copy selected files with 's' - files are copied to target directory
+
 File Comparison Notes:
 - Shows ALL files from both directories, not just common ones
 - Files unique to one side show [LEFT ONLY] or [RIGHT ONLY] tags
 - Unique files can still be "compared" (shown as all additions or deletions)
+- Unique files can be easily copied between directories using copy mode
 - Only text files are included (detects common extensions automatically)
 - Path suggestions include files and directories from your current working directory`
 
@@ -673,6 +696,167 @@ func (m *Model) renderMergeView() string {
 		helpText = "Space:Toggle t:Target a:All n:None s:Save Esc:Back"
 	}
 	b.WriteString(helpStyle.Width(m.windowWidth).Render(helpText))
+
+	return b.String()
+}
+
+// renderCopyView renders the copy interface for copying unique files
+func (m *Model) renderCopyView() string {
+	if len(m.allFiles) == 0 {
+		return "No files loaded for copying"
+	}
+
+	uniqueFiles := m.getUniqueFiles()
+	if len(uniqueFiles) == 0 {
+		return "No unique files to copy"
+	}
+
+	var b strings.Builder
+
+	// Header
+	var targetDesc string
+	if m.copyTarget == "to-right" {
+		targetDesc = "to RIGHT directory"
+	} else {
+		targetDesc = "to LEFT directory"
+	}
+	header := fmt.Sprintf("Copy Mode - Target: %s", targetDesc)
+	b.WriteString(mergeHeaderStyle.Width(m.windowWidth).Render(header))
+	b.WriteString("\n\n")
+
+	// Statistics
+	selectedCount := 0
+	totalCount := len(uniqueFiles)
+	for _, relPath := range uniqueFiles {
+		if m.copySelection[relPath] {
+			selectedCount++
+		}
+	}
+	stats := fmt.Sprintf("Selected: %d/%d unique files to copy", selectedCount, totalCount)
+	b.WriteString(helpStyle.Width(m.windowWidth).Render(stats))
+	b.WriteString("\n\n")
+
+	// Copy content with selection indicators
+	b.WriteString(m.renderCopyContent())
+
+	// Help text
+	b.WriteString("\n")
+	var helpText string
+	if m.windowWidth > 80 {
+		helpText = "Space/Enter: Toggle • t: Switch target • a: Select all • n: Select none • s: Copy files • Esc: Back • ?: Help"
+	} else if m.windowWidth > 60 {
+		helpText = "Space: Toggle • t: Target • a: All • n: None • s: Copy • Esc: Back"
+	} else {
+		helpText = "Space:Toggle t:Target a:All n:None s:Copy Esc:Back"
+	}
+	b.WriteString(helpStyle.Width(m.windowWidth).Render(helpText))
+
+	return b.String()
+}
+
+// renderCopyContent renders the unique files with selection indicators
+func (m *Model) renderCopyContent() string {
+	uniqueFiles := m.getUniqueFiles()
+	if len(uniqueFiles) == 0 {
+		return "No unique files found"
+	}
+
+	var b strings.Builder
+	maxVisible := m.windowHeight - 12 // Account for header, stats, and help text
+	if maxVisible < 5 {
+		maxVisible = 5
+	}
+
+	start := m.scrollOffset
+	end := start + maxVisible
+	if end > len(uniqueFiles) {
+		end = len(uniqueFiles)
+	}
+
+	for i := start; i < end; i++ {
+		relPath := uniqueFiles[i]
+		fileComp := m.allFiles[relPath]
+
+		cursor := "  "
+		if i == m.cursor {
+			cursor = "▶ "
+		}
+
+		// Determine file source and status
+		var statusIcon, sourceInfo string
+		var fileInfo *file.FileInfo
+
+		if fileComp.Source == file.SourceLeft {
+			statusIcon = "◄"
+			sourceInfo = "[LEFT ONLY]"
+			fileInfo = fileComp.LeftFile
+		} else {
+			statusIcon = "►"
+			sourceInfo = "[RIGHT ONLY]"
+			fileInfo = fileComp.RightFile
+		}
+
+		// Check if this file should be copied based on target
+		canCopy := false
+		if m.copyTarget == "to-right" && fileComp.Source == file.SourceLeft {
+			canCopy = true
+		} else if m.copyTarget == "to-left" && fileComp.Source == file.SourceRight {
+			canCopy = true
+		}
+
+		// Selection indicator
+		var selectionIcon string
+		if !canCopy {
+			selectionIcon = "[-]" // Cannot copy (wrong direction)
+		} else if m.copySelection[relPath] {
+			selectionIcon = "[✓]" // Selected for copying
+		} else {
+			selectionIcon = "[ ]" // Not selected
+		}
+
+		// File size
+		sizeInfo := fmt.Sprintf("(%s)", formatFileSize(fileInfo.Size))
+
+		// Truncate filename if needed
+		maxContentWidth := m.windowWidth - 25 // Account for cursor, icons, size, etc.
+		if maxContentWidth < 20 {
+			maxContentWidth = 20
+		}
+		displayPath := relPath
+		if len(displayPath) > maxContentWidth {
+			displayPath = displayPath[:maxContentWidth-3] + "..."
+		}
+
+		// Render line
+		lineText := fmt.Sprintf("%s%s %s %s %s %s", cursor, selectionIcon, statusIcon, displayPath, sizeInfo, sourceInfo)
+
+		var renderedLine string
+		if !canCopy {
+			// Grayed out for files that can't be copied in current direction
+			renderedLine = helpStyle.Width(m.windowWidth - 2).Render(lineText)
+		} else if m.copySelection[relPath] {
+			// Selected files
+			renderedLine = selectedChangeStyle.Width(m.windowWidth - 2).Render(lineText)
+		} else {
+			// Unselected files
+			renderedLine = lineText
+		}
+
+		b.WriteString(renderedLine)
+		b.WriteString("\n")
+	}
+
+	// Show scroll indicator if needed
+	if len(uniqueFiles) > maxVisible {
+		var scrollInfo string
+		if m.windowWidth > 50 {
+			scrollInfo = fmt.Sprintf("Showing %d-%d of %d unique files", start+1, end, len(uniqueFiles))
+		} else {
+			scrollInfo = fmt.Sprintf("%d-%d of %d", start+1, end, len(uniqueFiles))
+		}
+		b.WriteString(helpStyle.Width(m.windowWidth).Render(scrollInfo))
+		b.WriteString("\n")
+	}
 
 	return b.String()
 }
