@@ -5,6 +5,7 @@ A powerful terminal-based user interface (TUI) application for visually comparin
 ## ✨ Features
 
 - 🎨 **Visual Diff Highlighting**: Green backgrounds for additions, blue backgrounds for deletions
+- 🔀 **Interactive Merge Mode**: Cherry-pick and apply specific changes between files
 - 📁 **Smart Directory Comparison**: Automatically finds and compares common files between directories
 - ⌨️ **Intuitive Controls**: Vim-like navigation (j/k) with full arrow key support
 - 🔍 **Intelligent File Detection**: Automatically identifies 50+ text file types for comparison
@@ -13,6 +14,7 @@ A powerful terminal-based user interface (TUI) application for visually comparin
 - 🚀 **Fast Performance**: Efficient diff algorithm with semantic cleanup
 - 📱 **Responsive Design**: Adapts to terminal window size changes
 - 🎯 **Multi-file Navigation**: Easy switching between multiple file comparisons
+- 💾 **Selective Merging**: Save merged results with only the changes you want
 
 ## Installation
 
@@ -56,7 +58,11 @@ go run main.go
 make deps && make build
 
 # Try the demo with example files
+# Try with examples
 make demo
+
+# Demo the new merge functionality
+./demo-merge.sh
 
 # Quick test with sample files
 make run-files
@@ -81,7 +87,19 @@ make run-dirs
 - **G**: Go to bottom of diff
 - **n**: Next common file
 - **p**: Previous common file
+- **m**: Enter merge mode
 - **Esc**: Return to file selection
+- **?**: Show help screen
+- **Q/Ctrl+C**: Quit application
+
+#### Merge Mode
+- **↑/↓** or **j/k**: Navigate through diff lines
+- **Space/Enter**: Toggle selection of current change
+- **t**: Switch merge target (left/right file)
+- **a**: Select all changes
+- **n**: Select no changes
+- **s**: Save merged result to file
+- **Esc**: Return to diff view
 - **?**: Show help screen
 - **Q/Ctrl+C**: Quit application
 
@@ -90,6 +108,8 @@ make run-dirs
 - **Green background**: Added lines (+)
 - **Blue background**: Deleted lines (-)
 - **Gray text**: Unchanged lines
+- **Yellow background**: Selected changes (merge mode)
+- **Strikethrough text**: Unselected changes (merge mode)
 
 ## 📄 Supported File Types
 
@@ -120,6 +140,8 @@ The tool intelligently detects and compares 50+ text file types:
 3. **Select File**: Choose which common file to compare using the arrow keys
 4. **View Diff**: See the side-by-side comparison with color-coded changes
 5. **Navigate**: Move through the diff and switch between files seamlessly
+6. **Merge Changes**: Press 'm' to enter merge mode and selectively apply changes
+7. **Save Results**: Choose which changes to keep and save the merged file
 
 ## Examples
 
@@ -153,6 +175,7 @@ Then enter paths interactively using the TUI.
 internal/
 ├── ui/         # TUI components and views
 ├── differ/     # Diff computation engine  
+├── merge/      # Merge functionality and change selection
 ├── file/       # File operations and type detection
 └── ...
 
@@ -162,18 +185,23 @@ examples/       # Sample files for testing
 ## 🎛️ Advanced Usage
 
 ### Keyboard Shortcuts Summary
-| Key | File Selection | Diff View | Description |
-|-----|----------------|-----------|-------------|
-| `Tab` | ✅ | ❌ | Switch input fields |
-| `Enter` | ✅ | ❌ | Load entered path |
-| `↑/↓` | ✅ | ✅ | Navigate lists/lines |
-| `j/k` | ❌ | ✅ | Vim-style navigation |
-| `g/G` | ❌ | ✅ | Jump to top/bottom |
-| `n/p` | ✅ | ✅ | Next/previous file |
-| `Ctrl+D` | ✅ | ❌ | Start comparison |
-| `Esc` | ❌ | ✅ | Return to file selection |
-| `?` | ✅ | ✅ | Show help screen |
-| `Q/Ctrl+C` | ✅ | ✅ | Quit application |
+| Key | File Selection | Diff View | Merge Mode | Description |
+|-----|----------------|-----------|------------|-------------|
+| `Tab` | ✅ | ❌ | ❌ | Switch input fields |
+| `Enter` | ✅ | ❌ | ✅ | Load entered path / Toggle change |
+| `↑/↓` | ✅ | ✅ | ✅ | Navigate lists/lines |
+| `j/k` | ❌ | ✅ | ✅ | Vim-style navigation |
+| `g/G` | ❌ | ✅ | ❌ | Jump to top/bottom |
+| `n/p` | ✅ | ✅ | ❌ | Next/previous file |
+| `m` | ❌ | ✅ | ❌ | Enter merge mode |
+| `t` | ❌ | ❌ | ✅ | Switch merge target |
+| `a` | ❌ | ❌ | ✅ | Select all changes |
+| `Space` | ❌ | ❌ | ✅ | Toggle current change |
+| `s` | ❌ | ❌ | ✅ | Save merged result |
+| `Ctrl+D` | ✅ | ❌ | ❌ | Start comparison |
+| `Esc` | ❌ | ✅ | ✅ | Return to previous view |
+| `?` | ✅ | ✅ | ✅ | Show help screen |
+| `Q/Ctrl+C` | ✅ | ✅ | ✅ | Quit application |
 
 ### Performance Tips
 - Large files (>10MB) may take a moment to process
@@ -220,16 +248,22 @@ Contributions are welcome! Areas for improvement:
 - Additional file type support
 - Syntax highlighting within diffs  
 - Side-by-side view mode
+- Advanced merge conflict resolution
 - Export diff results
 - Configuration file support
+- Undo/redo for merge operations
 
 Please feel free to submit issues, feature requests, or pull requests.
 
 ## 📋 Roadmap
 
+- [x] Interactive merge mode with selective change application
 - [ ] Syntax highlighting for code diffs
 - [ ] Side-by-side comparison view
+- [ ] Three-way merge support
+- [ ] Merge conflict resolution
 - [ ] Export diffs to HTML/PDF
 - [ ] Configuration file support
 - [ ] Plugin system for custom file types
 - [ ] Integration with Git for commit diffs
+- [ ] Undo/redo functionality in merge mode

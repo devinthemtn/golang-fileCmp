@@ -97,6 +97,16 @@ func (m *Model) renderFileSelectView() string {
 
 	if len(m.commonFiles) > 0 {
 		b.WriteString(fmt.Sprintf("\nFound %d common files:\n", len(m.commonFiles)))
+		if m.selectedFile != "" {
+			selectedPath := m.selectedFile
+			if len(selectedPath) > maxInputWidth {
+				selectedPath = "..." + selectedPath[len(selectedPath)-maxInputWidth+3:]
+			}
+			b.WriteString(selectedFileStyle.Render(fmt.Sprintf("► Selected: %s", selectedPath)))
+			b.WriteString(" ")
+			b.WriteString(helpStyle.Render("(Press Ctrl+D to compare)"))
+			b.WriteString("\n")
+		}
 		b.WriteString(m.renderFileList())
 	}
 
@@ -122,11 +132,11 @@ func (m *Model) renderFileSelectView() string {
 		}
 	} else {
 		if m.windowWidth > 80 {
-			helpText = "Tab: Switch input • Enter: Load path • ↑↓: Select file • Ctrl+D: Compare • ?: Help • Q: Quit"
+			helpText = "Tab: Switch input • Enter: Load path • ↑↓: Navigate files • Ctrl+D: Compare • ?: Help • Q: Quit"
 		} else if m.windowWidth > 60 {
-			helpText = "Tab: Switch • Enter: Load • ↑↓: Select • Ctrl+D: Compare • ?: Help • Q: Quit"
+			helpText = "Tab: Switch • Enter: Load • ↑↓: Navigate • Ctrl+D: Compare • ?: Help • Q: Quit"
 		} else {
-			helpText = "Tab:Switch Enter:Load ↑↓:Select Ctrl+D:Compare ?:Help Q:Quit"
+			helpText = "Tab:Switch Enter:Load ↑↓:Navigate Ctrl+D:Compare ?:Help Q:Quit"
 		}
 	}
 	b.WriteString(helpStyle.Width(m.windowWidth - 2).Render(helpText))
@@ -239,7 +249,7 @@ func (m *Model) renderFileList() string {
 		fileDisplay := fmt.Sprintf("%s %s %s", statusIndicator, displayPath, sizeInfo)
 
 		if relPath == m.selectedFile {
-			items = append(items, selectedFileStyle.Width(maxFileWidth).Render("→ "+fileDisplay))
+			items = append(items, selectedFileStyle.Width(maxFileWidth).Render("► "+fileDisplay))
 		} else {
 			items = append(items, "  "+fileDisplay)
 		}
@@ -310,11 +320,11 @@ func (m *Model) renderDiffView() string {
 	b.WriteString("\n")
 	var helpText string
 	if m.windowWidth > 80 {
-		helpText = "↑↓/j/k: Navigate • g/G: Top/Bottom • n/p: Next/Prev file • Esc: Back • ?: Help • Q: Quit"
+		helpText = "↑↓/j/k: Navigate • g/G: Top/Bottom • n/p: Next/Prev file • m: Merge • Esc: Back • ?: Help • Q: Quit"
 	} else if m.windowWidth > 60 {
-		helpText = "↑↓/j/k: Navigate • g/G: Top/Bottom • n/p: Files • Esc: Back • ?: Help • Q: Quit"
+		helpText = "↑↓/j/k: Navigate • g/G: Top/Bottom • n/p: Files • m: Merge • Esc: Back • ?: Help • Q: Quit"
 	} else {
-		helpText = "↑↓:Nav g/G:Top/Bot n/p:Files Esc:Back ?:Help Q:Quit"
+		helpText = "↑↓:Nav g/G:Top/Bot n/p:Files m:Merge Esc:Back ?:Help Q:Quit"
 	}
 	b.WriteString(helpStyle.Width(m.windowWidth).Render(helpText))
 
@@ -420,7 +430,19 @@ Diff View Mode:
   G                Go to bottom of diff
   n                Next common file
   p                Previous common file
+  m                Enter merge mode
   Esc              Return to file selection
+  ?                Show this help screen
+  Q/Ctrl+C         Quit application
+
+Merge Mode:
+  ↑/↓ or j/k       Navigate through diff lines
+  Space/Enter      Toggle selection of current change
+  t                Switch merge target (left/right)
+  a                Select all changes
+  n                Select no changes
+  s                Save merged result to file
+  Esc              Return to diff view
   ?                Show this help screen
   Q/Ctrl+C         Quit application
 
@@ -435,6 +457,10 @@ Color Legend:
 	b.WriteString(deleteLineStyle.Render("Red background: Deleted lines (-)"))
 	b.WriteString("\n")
 	b.WriteString(equalLineStyle.Render("Gray text: Unchanged lines"))
+	b.WriteString("\n")
+	b.WriteString(selectedChangeStyle.Render("Yellow background: Selected changes (merge mode)"))
+	b.WriteString("\n")
+	b.WriteString(unselectedChangeStyle.Render("Strikethrough: Unselected changes (merge mode)"))
 	b.WriteString("\n\n")
 
 	instructions := `Instructions:
@@ -447,6 +473,16 @@ Color Legend:
 4. Press Ctrl+D to start comparing
 5. Navigate through the diff using arrow keys or j/k
 6. Use n/p to switch between different files
+7. Press 'm' in diff view to enter merge mode
+8. In merge mode, select which changes to apply and press 's' to save
+
+Merge Workflow:
+- Enter merge mode from diff view with 'm'
+- Navigate with ↑/↓ or j/k through changes
+- Toggle individual changes with Space/Enter
+- Use 'a' to select all or 'n' to select none
+- Switch target file with 't' (left or right)
+- Save merged result with 's' - creates .merged file
 
 Note: Only text files will be compared. The tool automatically
 detects common text file extensions and filenames. Path suggestions
@@ -505,4 +541,140 @@ func (m *Model) renderSuggestions(suggestions []string, selectedIndex int) strin
 		content += helpStyle.Render(fmt.Sprintf("\n... and %d more", len(suggestions)-maxSuggestions))
 	}
 	return suggestionStyle.Width(m.windowWidth - 4).Render(content)
+}
+
+// renderMergeView renders the merge interface
+func (m *Model) renderMergeView() string {
+	if m.currentDiff == nil {
+		return "No diff loaded for merging"
+	}
+
+	var b strings.Builder
+
+	// Header
+	header := fmt.Sprintf("Merge Mode - Target: %s", strings.ToUpper(m.mergeTarget))
+	b.WriteString(mergeHeaderStyle.Width(m.windowWidth).Render(header))
+	b.WriteString("\n\n")
+
+	// Statistics
+	if m.changeSelection != nil {
+		selIns, totIns, selDel, totDel := m.changeSelection.GetSelectedStats(m.currentDiff)
+		stats := fmt.Sprintf("Selected: %d/%d insertions, %d/%d deletions", selIns, totIns, selDel, totDel)
+		b.WriteString(helpStyle.Width(m.windowWidth).Render(stats))
+		b.WriteString("\n\n")
+	}
+
+	// Diff content with selection indicators
+	b.WriteString(m.renderMergeContent())
+
+	// Help text
+	b.WriteString("\n")
+	var helpText string
+	if m.windowWidth > 80 {
+		helpText = "Space/Enter: Toggle • t: Switch target • a: Select all • n: Select none • s: Save • Esc: Back • ?: Help"
+	} else if m.windowWidth > 60 {
+		helpText = "Space: Toggle • t: Target • a: All • n: None • s: Save • Esc: Back"
+	} else {
+		helpText = "Space:Toggle t:Target a:All n:None s:Save Esc:Back"
+	}
+	b.WriteString(helpStyle.Width(m.windowWidth).Render(helpText))
+
+	return b.String()
+}
+
+// renderMergeContent renders the diff lines with selection indicators
+func (m *Model) renderMergeContent() string {
+	if m.currentDiff == nil || len(m.currentDiff.Lines) == 0 {
+		return "No differences found"
+	}
+
+	var b strings.Builder
+	maxVisible := m.windowHeight - 12 // Account for header, stats, and help text
+	if maxVisible < 5 {
+		maxVisible = 5
+	}
+
+	start := m.scrollOffset
+	end := start + maxVisible
+	if end > len(m.currentDiff.Lines) {
+		end = len(m.currentDiff.Lines)
+	}
+
+	for i := start; i < end; i++ {
+		line := m.currentDiff.Lines[i]
+		prefix := "  "
+		cursor := "  "
+
+		if i == m.cursor {
+			cursor = "▶ "
+		}
+
+		lineNum := fmt.Sprintf("%4d", line.LineNum)
+		content := line.Content
+
+		// Truncate long lines to fit screen width
+		maxContentWidth := m.windowWidth - 16 // Account for prefix, cursor, line numbers, and padding
+		if maxContentWidth < 20 {
+			maxContentWidth = 20
+		}
+		if len(content) > maxContentWidth {
+			content = content[:maxContentWidth-3] + "..."
+		}
+
+		var renderedLine string
+		var selected bool
+
+		switch line.Type {
+		case differ.DiffEqual:
+			lineText := fmt.Sprintf("%s%s%s %s", cursor, prefix, lineNum, content)
+			renderedLine = equalLineStyle.Width(m.windowWidth - 2).Render(lineText)
+
+		case differ.DiffInsert:
+			if m.changeSelection != nil {
+				selected = m.changeSelection.IsInsertionSelected(i)
+			}
+
+			if selected {
+				prefix = "[✓]"
+				lineText := fmt.Sprintf("%s%s%s +%s", cursor, prefix, lineNum, content)
+				renderedLine = selectedChangeStyle.Width(m.windowWidth - 2).Render(lineText)
+			} else {
+				prefix = "[ ]"
+				lineText := fmt.Sprintf("%s%s%s +%s", cursor, prefix, lineNum, content)
+				renderedLine = unselectedChangeStyle.Width(m.windowWidth - 2).Render(lineText)
+			}
+
+		case differ.DiffDelete:
+			if m.changeSelection != nil {
+				selected = m.changeSelection.IsDeletionSelected(i)
+			}
+
+			if selected {
+				prefix = "[✓]"
+				lineText := fmt.Sprintf("%s%s%s -%s", cursor, prefix, lineNum, content)
+				renderedLine = selectedChangeStyle.Width(m.windowWidth - 2).Render(lineText)
+			} else {
+				prefix = "[ ]"
+				lineText := fmt.Sprintf("%s%s%s -%s", cursor, prefix, lineNum, content)
+				renderedLine = unselectedChangeStyle.Width(m.windowWidth - 2).Render(lineText)
+			}
+		}
+
+		b.WriteString(renderedLine)
+		b.WriteString("\n")
+	}
+
+	// Show scroll indicator if needed
+	if len(m.currentDiff.Lines) > maxVisible {
+		var scrollInfo string
+		if m.windowWidth > 50 {
+			scrollInfo = fmt.Sprintf("Showing %d-%d of %d lines", start+1, end, len(m.currentDiff.Lines))
+		} else {
+			scrollInfo = fmt.Sprintf("%d-%d of %d", start+1, end, len(m.currentDiff.Lines))
+		}
+		b.WriteString(helpStyle.Width(m.windowWidth).Render(scrollInfo))
+		b.WriteString("\n")
+	}
+
+	return b.String()
 }

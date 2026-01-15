@@ -69,6 +69,16 @@ demo:
 	@echo "🎬 Running demo script..."
 	@./test-demo.sh
 
+# Show merge functionality demo
+demo-merge:
+	@echo "🔀 Running merge functionality demo..."
+	@./merge-example.sh
+
+# Demo the new merge feature with simple files
+demo-merge-simple:
+	@echo "🔀 Running simple merge demo..."
+	@./demo-merge.sh
+
 # Clean build artifacts
 clean:
 	@echo "🧹 Cleaning build artifacts..."
@@ -98,6 +108,8 @@ help:
 	@echo "  run-files     Run with example files"
 	@echo "  run-dirs      Run with example directories"
 	@echo "  demo          Run demo script"
+	@echo "  demo-merge    Run comprehensive merge demo"
+	@echo "  demo-merge-simple Run simple merge demo"
 	@echo "  clean         Clean build artifacts"
 	@echo "  install       Install to system PATH"
 	@echo "  help          Show this help message"
@@ -105,6 +117,7 @@ help:
 	@echo "Examples:"
 	@echo "  make build              # Build the application"
 	@echo "  make demo               # Show demo with examples"
+	@echo "  make demo-merge         # Show merge functionality demo"
 	@echo "  make run-files          # Quick test with sample files"
 	@echo "  make install            # Install system-wide"
 	@echo ""

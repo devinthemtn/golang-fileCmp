@@ -9,6 +9,7 @@ import (
 
 	"golang-fileCmp/internal/differ"
 	"golang-fileCmp/internal/file"
+	"golang-fileCmp/internal/merge"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -20,6 +21,7 @@ type ViewMode int
 const (
 	ViewModeFileSelect ViewMode = iota
 	ViewModeDiff
+	ViewModeMerge
 	ViewModeHelp
 )
 
@@ -44,9 +46,15 @@ type Model struct {
 	scrollOffset int
 	cursor       int
 
+	// Merge view
+	changeSelection *merge.ChangeSelection
+	mergeTarget     string // "left" or "right"
+	mergePreview    string
+
 	// Services
 	fileManager *file.Manager
 	differ      *differ.Differ
+	merger      *merge.Merger
 
 	// UI state
 	inputLeft   string
@@ -128,6 +136,27 @@ var (
 	selectedSuggestionStyle = lipgloss.NewStyle().
 				Background(lipgloss.Color("#DDDDDD")).
 				Foreground(lipgloss.Color("#000000"))
+
+	// Merge mode styles
+	mergeHeaderStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#FAFAFA")).
+				Background(lipgloss.Color("#00AA00")).
+				Padding(0, 1).
+				Bold(true)
+
+	selectedChangeStyle = lipgloss.NewStyle().
+				Background(lipgloss.Color("#FFFF00")).
+				Foreground(lipgloss.Color("#000000")).
+				Bold(true)
+
+	unselectedChangeStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#666666")).
+				Strikethrough(true)
+
+	previewStyle = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(lipgloss.Color("#00AA00")).
+			Padding(1)
 )
 
 // New creates a new model
@@ -136,12 +165,14 @@ func New() *Model {
 		viewMode:        ViewModeFileSelect,
 		fileManager:     file.New(),
 		differ:          differ.New(),
+		merger:          merge.New(),
 		focusLeft:       true,
 		commonFiles:     make(map[string][2]*file.FileInfo),
 		leftSuggIndex:   -1,
 		rightSuggIndex:  -1,
 		showSuggestions: false,
 		fileListScroll:  0,
+		mergeTarget:     "left",
 	}
 }
 
@@ -172,6 +203,8 @@ func (m *Model) View() string {
 		return m.renderFileSelectView()
 	case ViewModeDiff:
 		return m.renderDiffView()
+	case ViewModeMerge:
+		return m.renderMergeView()
 	case ViewModeHelp:
 		return m.renderHelpView()
 	default:
@@ -186,6 +219,8 @@ func (m *Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleFileSelectKeys(msg)
 	case ViewModeDiff:
 		return m.handleDiffKeys(msg)
+	case ViewModeMerge:
+		return m.handleMergeKeys(msg)
 	case ViewModeHelp:
 		return m.handleHelpKeys(msg)
 	}
@@ -245,13 +280,18 @@ func (m *Model) handleFileSelectKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "ctrl+d":
 		if len(m.commonFiles) > 0 {
-			// Select first common file by default
-			for relPath := range m.commonFiles {
-				m.selectedFile = relPath
-				break
+			// If no file is selected, select the first one
+			if m.selectedFile == "" {
+				files := m.getSortedFiles()
+				if len(files) > 0 {
+					m.selectedFile = files[0]
+				}
 			}
-			m.loadDiff()
-			m.viewMode = ViewModeDiff
+			// Load diff for the currently selected file
+			if m.selectedFile != "" {
+				m.loadDiff()
+				m.viewMode = ViewModeDiff
+			}
 		}
 		return m, nil
 
@@ -297,6 +337,8 @@ func (m *Model) handleFileSelectKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		if len(m.commonFiles) > 0 {
 			m.selectPreviousFile()
+			// Only auto-load diff if we're in file selection mode
+			// In diff mode, user needs to press Ctrl+D or navigate with n/p
 		}
 		return m, nil
 
@@ -312,6 +354,8 @@ func (m *Model) handleFileSelectKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		if len(m.commonFiles) > 0 {
 			m.selectNextFile()
+			// Only auto-load diff if we're in file selection mode
+			// In diff mode, user needs to press Ctrl+D or navigate with n/p
 		}
 		return m, nil
 
@@ -384,6 +428,91 @@ func (m *Model) handleDiffKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "?":
 		m.viewMode = ViewModeHelp
 		return m, nil
+
+	case "m":
+		// Enter merge mode if we have a diff loaded
+		if m.currentDiff != nil {
+			m.initializeMergeMode()
+			m.viewMode = ViewModeMerge
+		}
+		return m, nil
+	}
+
+	return m, nil
+}
+
+// handleMergeKeys handles keys in merge view mode
+func (m *Model) handleMergeKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c", "q":
+		return m, tea.Quit
+
+	case "esc":
+		m.viewMode = ViewModeDiff
+		return m, nil
+
+	case "up", "k":
+		if m.cursor > 0 {
+			m.cursor--
+			if m.cursor < m.scrollOffset {
+				m.scrollOffset = m.cursor
+			}
+		}
+		return m, nil
+
+	case "down", "j":
+		if m.currentDiff != nil && m.cursor < len(m.currentDiff.Lines)-1 {
+			m.cursor++
+			maxVisible := m.windowHeight - 15 // Account for header and footer
+			if m.cursor >= m.scrollOffset+maxVisible {
+				m.scrollOffset = m.cursor - maxVisible + 1
+			}
+		}
+		return m, nil
+
+	case " ", "enter":
+		// Toggle selection of current change
+		if m.currentDiff != nil && m.cursor < len(m.currentDiff.Lines) {
+			line := m.currentDiff.Lines[m.cursor]
+			switch line.Type {
+			case differ.DiffInsert:
+				m.changeSelection.ToggleInsertion(m.cursor)
+			case differ.DiffDelete:
+				m.changeSelection.ToggleDeletion(m.cursor)
+			}
+			m.updateMergePreview()
+		}
+		return m, nil
+
+	case "a":
+		// Select all changes
+		m.changeSelection.SelectAll(m.currentDiff)
+		m.updateMergePreview()
+		return m, nil
+
+	case "n":
+		// Select no changes
+		m.changeSelection.SelectNone(m.currentDiff)
+		m.updateMergePreview()
+		return m, nil
+
+	case "t":
+		// Toggle merge target (left/right)
+		if m.mergeTarget == "left" {
+			m.mergeTarget = "right"
+		} else {
+			m.mergeTarget = "left"
+		}
+		m.updateMergePreview()
+		return m, nil
+
+	case "s":
+		// Save merged result
+		return m, m.saveMergedFile()
+
+	case "?":
+		m.viewMode = ViewModeHelp
+		return m, nil
 	}
 
 	return m, nil
@@ -395,7 +524,9 @@ func (m *Model) handleHelpKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "ctrl+c", "q":
 		return m, tea.Quit
 	case "esc", "?":
-		if len(m.commonFiles) > 0 && m.currentDiff != nil {
+		if m.viewMode == ViewModeMerge {
+			m.viewMode = ViewModeMerge
+		} else if len(m.commonFiles) > 0 && m.currentDiff != nil {
 			m.viewMode = ViewModeDiff
 		} else {
 			m.viewMode = ViewModeFileSelect
@@ -518,11 +649,13 @@ func (m *Model) selectPreviousFile() {
 
 func (m *Model) loadDiff() {
 	if m.selectedFile == "" {
+		m.errorMsg = "No file selected for comparison"
 		return
 	}
 
 	filePair, exists := m.commonFiles[m.selectedFile]
 	if !exists {
+		m.errorMsg = fmt.Sprintf("Selected file '%s' no longer exists in common files", m.selectedFile)
 		return
 	}
 
@@ -539,6 +672,7 @@ func (m *Model) loadDiff() {
 	m.currentDiff = diff
 	m.cursor = 0
 	m.scrollOffset = 0
+	m.errorMsg = "" // Clear any previous errors
 }
 
 func max(a, b int) int {
@@ -553,6 +687,17 @@ func (m *Model) SetLeftPath(path string) {
 	m.inputLeft = path
 	m.leftPath = path
 	m.loadLeftPath()
+
+	// If we already have a right file, update common files and select first
+	if m.rightFile != nil {
+		m.updateCommonFiles()
+		if len(m.commonFiles) > 0 && m.selectedFile == "" {
+			files := m.getSortedFiles()
+			if len(files) > 0 {
+				m.selectedFile = files[0]
+			}
+		}
+	}
 }
 
 // SetRightPath sets the right path and loads it
@@ -561,6 +706,14 @@ func (m *Model) SetRightPath(path string) {
 	m.rightPath = path
 	m.loadRightPath()
 	m.updateCommonFiles()
+
+	// Ensure first file is selected when both paths are loaded
+	if m.leftFile != nil && m.rightFile != nil && len(m.commonFiles) > 0 && m.selectedFile == "" {
+		files := m.getSortedFiles()
+		if len(files) > 0 {
+			m.selectedFile = files[0]
+		}
+	}
 }
 
 // Path suggestion methods
@@ -663,4 +816,53 @@ func (m *Model) generateSuggestions(input string) []string {
 	}
 
 	return suggestions
+}
+
+// initializeMergeMode sets up merge mode with default selections
+func (m *Model) initializeMergeMode() {
+	if m.currentDiff == nil {
+		return
+	}
+
+	m.changeSelection = merge.NewChangeSelection(m.currentDiff)
+	m.updateMergePreview()
+	m.cursor = 0
+	m.scrollOffset = 0
+}
+
+// updateMergePreview updates the merge preview text
+func (m *Model) updateMergePreview() {
+	if m.currentDiff == nil || m.changeSelection == nil {
+		return
+	}
+
+	m.mergePreview = m.merger.CreateMergePreview(m.currentDiff, m.changeSelection, m.mergeTarget)
+}
+
+// saveMergedFile saves the merged result to a file
+func (m *Model) saveMergedFile() tea.Cmd {
+	return func() tea.Msg {
+		if m.currentDiff == nil || m.changeSelection == nil {
+			return nil
+		}
+
+		var result *merge.MergeResult
+		var targetPath string
+
+		if m.mergeTarget == "left" {
+			result = m.merger.ApplyToLeft(m.currentDiff, m.changeSelection)
+			targetPath = m.currentDiff.LeftFile + ".merged"
+		} else {
+			result = m.merger.ApplyToRight(m.currentDiff, m.changeSelection)
+			targetPath = m.currentDiff.RightFile + ".merged"
+		}
+
+		err := os.WriteFile(targetPath, []byte(result.Content), 0644)
+		if err != nil {
+			return fmt.Sprintf("Error saving merged file: %s", err.Error())
+		}
+
+		return fmt.Sprintf("Saved merged result to %s (%d changes applied, %d skipped)",
+			targetPath, result.Applied, result.Skipped)
+	}
 }
