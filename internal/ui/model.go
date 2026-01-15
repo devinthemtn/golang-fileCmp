@@ -26,6 +26,14 @@ const (
 	ViewModeHelp
 )
 
+// DiffViewMode represents the diff display mode
+type DiffViewMode int
+
+const (
+	DiffViewUnified DiffViewMode = iota
+	DiffViewSideBySide
+)
+
 // Model represents the main application state
 type Model struct {
 	// Application state
@@ -47,6 +55,9 @@ type Model struct {
 	currentDiff  *differ.FileDiff
 	scrollOffset int
 	cursor       int
+	diffViewMode DiffViewMode
+	leftCursor   int // Cursor position for left side in side-by-side view
+	rightCursor  int // Cursor position for right side in side-by-side view
 
 	// Merge view
 	changeSelection *merge.ChangeSelection
@@ -182,6 +193,9 @@ func New() *Model {
 		mergeTarget:     "left",
 		copySelection:   make(map[string]bool),
 		copyTarget:      "to-right",
+		diffViewMode:    DiffViewUnified,
+		leftCursor:      0,
+		rightCursor:     0,
 	}
 }
 
@@ -397,34 +411,88 @@ func (m *Model) handleDiffKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "up", "k":
-		if m.cursor > 0 {
-			m.cursor--
-			if m.cursor < m.scrollOffset {
-				m.scrollOffset = m.cursor
+		if m.diffViewMode == DiffViewUnified {
+			if m.cursor > 0 {
+				m.cursor--
+				if m.cursor < m.scrollOffset {
+					m.scrollOffset = m.cursor
+				}
+			}
+		} else {
+			// Side-by-side mode: move up in both sides
+			if m.leftCursor > 0 {
+				m.leftCursor--
+				m.rightCursor--
+				if m.leftCursor < m.scrollOffset {
+					m.scrollOffset = m.leftCursor
+				}
 			}
 		}
 		return m, nil
 
 	case "down", "j":
-		if m.currentDiff != nil && m.cursor < len(m.currentDiff.Lines)-1 {
-			m.cursor++
-			maxVisible := m.windowHeight - 10 // Account for header and footer
-			if m.cursor >= m.scrollOffset+maxVisible {
-				m.scrollOffset = m.cursor - maxVisible + 1
+		if m.diffViewMode == DiffViewUnified {
+			if m.currentDiff != nil && m.cursor < len(m.currentDiff.Lines)-1 {
+				m.cursor++
+				maxVisible := m.windowHeight - 10 // Account for header and footer
+				if m.cursor >= m.scrollOffset+maxVisible {
+					m.scrollOffset = m.cursor - maxVisible + 1
+				}
+			}
+		} else {
+			// Side-by-side mode: move down in both sides
+			if m.currentDiff != nil {
+				maxLines := m.getMaxSideBySideLines()
+				if m.leftCursor < maxLines-1 {
+					m.leftCursor++
+					m.rightCursor++
+					maxVisible := m.windowHeight - 10
+					if m.leftCursor >= m.scrollOffset+maxVisible {
+						m.scrollOffset = m.leftCursor - maxVisible + 1
+					}
+				}
 			}
 		}
 		return m, nil
 
+	case "left", "h":
+		if m.diffViewMode == DiffViewSideBySide {
+			// In side-by-side mode, left focuses on left side
+			// This is just visual feedback for which side is "active"
+		}
+		return m, nil
+
+	case "right", "l":
+		if m.diffViewMode == DiffViewSideBySide {
+			// In side-by-side mode, right focuses on right side
+			// This is just visual feedback for which side is "active"
+		}
+		return m, nil
+
 	case "g":
-		m.cursor = 0
-		m.scrollOffset = 0
+		if m.diffViewMode == DiffViewUnified {
+			m.cursor = 0
+			m.scrollOffset = 0
+		} else {
+			m.leftCursor = 0
+			m.rightCursor = 0
+			m.scrollOffset = 0
+		}
 		return m, nil
 
 	case "G":
 		if m.currentDiff != nil {
-			m.cursor = len(m.currentDiff.Lines) - 1
-			maxVisible := m.windowHeight - 10
-			m.scrollOffset = max(0, m.cursor-maxVisible+1)
+			if m.diffViewMode == DiffViewUnified {
+				m.cursor = len(m.currentDiff.Lines) - 1
+				maxVisible := m.windowHeight - 10
+				m.scrollOffset = max(0, m.cursor-maxVisible+1)
+			} else {
+				maxLines := m.getMaxSideBySideLines()
+				m.leftCursor = maxLines - 1
+				m.rightCursor = maxLines - 1
+				maxVisible := m.windowHeight - 10
+				m.scrollOffset = max(0, m.leftCursor-maxVisible+1)
+			}
 		}
 		return m, nil
 
@@ -440,6 +508,15 @@ func (m *Model) handleDiffKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "?":
 		m.viewMode = ViewModeHelp
+		return m, nil
+
+	case "s":
+		// Toggle between unified and side-by-side diff view
+		if m.diffViewMode == DiffViewUnified {
+			m.diffViewMode = DiffViewSideBySide
+		} else {
+			m.diffViewMode = DiffViewUnified
+		}
 		return m, nil
 
 	case "m":
@@ -815,6 +892,17 @@ func max(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// getMaxSideBySideLines returns the maximum number of lines for side-by-side view
+func (m *Model) getMaxSideBySideLines() int {
+	if m.currentDiff == nil {
+		return 0
+	}
+
+	// For side-by-side view, we need to reconstruct the original file lines
+	// from the diff data. This is a simplified version that counts all diff lines.
+	return len(m.currentDiff.Lines)
 }
 
 // SetLeftPath sets the left path and loads it

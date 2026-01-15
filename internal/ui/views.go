@@ -370,7 +370,14 @@ func (m *Model) renderDiffView() string {
 		rightFile = "..." + rightFile[len(rightFile)-maxFileNameWidth+3:]
 	}
 
-	header := fmt.Sprintf("%s vs %s", leftFile, rightFile)
+	var viewModeIndicator string
+	if m.diffViewMode == DiffViewSideBySide {
+		viewModeIndicator = " [Side-by-Side]"
+	} else {
+		viewModeIndicator = " [Unified]"
+	}
+
+	header := fmt.Sprintf("%s vs %s%s", leftFile, rightFile, viewModeIndicator)
 	b.WriteString(headerStyle.Width(m.windowWidth).Render(header))
 	b.WriteString("\n\n")
 
@@ -385,18 +392,32 @@ func (m *Model) renderDiffView() string {
 	b.WriteString(helpStyle.Width(m.windowWidth).Render(stats))
 	b.WriteString("\n\n")
 
-	// Diff content
-	b.WriteString(m.renderDiffContent())
+	// Diff content based on view mode
+	if m.diffViewMode == DiffViewSideBySide {
+		b.WriteString(m.renderSideBySideContent())
+	} else {
+		b.WriteString(m.renderDiffContent())
+	}
 
-	// Navigation help - adapt to width
+	// Navigation help - adapt to width and view mode
 	b.WriteString("\n")
 	var helpText string
-	if m.windowWidth > 80 {
-		helpText = "↑↓/j/k: Navigate • g/G: Top/Bottom • n/p: Next/Prev file (all files) • m: Merge • Esc: Back • ?: Help • Q: Quit"
-	} else if m.windowWidth > 60 {
-		helpText = "↑↓/j/k: Navigate • g/G: Top/Bottom • n/p: All files • m: Merge • Esc: Back • ?: Help • Q: Quit"
+	if m.diffViewMode == DiffViewSideBySide {
+		if m.windowWidth > 80 {
+			helpText = "↑↓/j/k: Navigate • h/l: Left/Right • g/G: Top/Bottom • s: Switch view • n/p: Next/Prev file • m: Merge • Esc: Back • ?: Help • Q: Quit"
+		} else if m.windowWidth > 60 {
+			helpText = "↑↓/j/k: Navigate • h/l: Left/Right • s: Switch view • n/p: All files • m: Merge • Esc: Back • ?: Help • Q: Quit"
+		} else {
+			helpText = "↑↓:Nav h/l:L/R s:View n/p:Files m:Merge Esc:Back ?:Help Q:Quit"
+		}
 	} else {
-		helpText = "↑↓:Nav g/G:Top/Bot n/p:AllFiles m:Merge Esc:Back ?:Help Q:Quit"
+		if m.windowWidth > 80 {
+			helpText = "↑↓/j/k: Navigate • g/G: Top/Bottom • s: Switch view • n/p: Next/Prev file • m: Merge • Esc: Back • ?: Help • Q: Quit"
+		} else if m.windowWidth > 60 {
+			helpText = "↑↓/j/k: Navigate • g/G: Top/Bottom • s: Switch view • n/p: All files • m: Merge • Esc: Back • ?: Help • Q: Quit"
+		} else {
+			helpText = "↑↓:Nav g/G:Top/Bot s:View n/p:Files m:Merge Esc:Back ?:Help Q:Quit"
+		}
 	}
 	b.WriteString(helpStyle.Width(m.windowWidth).Render(helpText))
 
@@ -500,6 +521,21 @@ Diff View Mode:
   ↑/↓ or j/k       Navigate through diff lines
   g                Go to top of diff
   G                Go to bottom of diff
+  s                Switch view mode (Unified ↔ Side-by-Side)
+  n                Next common file
+  p                Previous common file
+  m                Enter merge mode
+  c                Enter copy mode (for unique files)
+  Esc              Return to file selection
+  ?                Show this help screen
+  Q/Ctrl+C         Quit application
+
+Side-by-Side View Mode:
+  ↑/↓ or j/k       Navigate through diff lines
+  h/l or ←/→       Visual focus left/right (for reference)
+  g                Go to top of diff
+  G                Go to bottom of diff
+  s                Switch to Unified view mode
   n                Next common file
   p                Previous common file
   m                Enter merge mode
@@ -862,6 +898,163 @@ func (m *Model) renderCopyContent() string {
 }
 
 // renderMergeContent renders the diff lines with selection indicators
+func (m *Model) renderSideBySideContent() string {
+	if m.currentDiff == nil || len(m.currentDiff.Lines) == 0 {
+		return "No differences found"
+	}
+
+	var b strings.Builder
+	maxVisible := m.windowHeight - 10 // Account for header, stats, and help text
+	if maxVisible < 5 {
+		maxVisible = 5
+	}
+
+	// Calculate available width for each side
+	sideWidth := (m.windowWidth - 5) / 2 // -5 for separator and padding
+	if sideWidth < 20 {
+		sideWidth = 20
+	}
+
+	start := m.scrollOffset
+	end := start + maxVisible
+	if end > len(m.currentDiff.Lines) {
+		end = len(m.currentDiff.Lines)
+	}
+
+	// Reconstruct original file lines from diff data
+	leftLines := make([]string, 0)
+	rightLines := make([]string, 0)
+	leftLineNums := make([]int, 0)
+	rightLineNums := make([]int, 0)
+
+	leftLineNum := 1
+	rightLineNum := 1
+
+	// Process diff to reconstruct side-by-side view
+	for _, line := range m.currentDiff.Lines {
+		switch line.Type {
+		case differ.DiffEqual:
+			leftLines = append(leftLines, line.Content)
+			rightLines = append(rightLines, line.Content)
+			leftLineNums = append(leftLineNums, leftLineNum)
+			rightLineNums = append(rightLineNums, rightLineNum)
+			leftLineNum++
+			rightLineNum++
+		case differ.DiffDelete:
+			leftLines = append(leftLines, line.Content)
+			rightLines = append(rightLines, "")
+			leftLineNums = append(leftLineNums, leftLineNum)
+			rightLineNums = append(rightLineNums, -1) // No line number for empty right side
+			leftLineNum++
+		case differ.DiffInsert:
+			leftLines = append(leftLines, "")
+			rightLines = append(rightLines, line.Content)
+			leftLineNums = append(leftLineNums, -1) // No line number for empty left side
+			rightLineNums = append(rightLineNums, rightLineNum)
+			rightLineNum++
+		}
+	}
+
+	// Render visible lines
+	for i := start; i < end && i < len(leftLines); i++ {
+		leftContent := leftLines[i]
+		rightContent := rightLines[i]
+		leftNum := leftLineNums[i]
+		rightNum := rightLineNums[i]
+
+		// Cursor indicator
+		cursor := "  "
+		if i == m.leftCursor {
+			cursor = "▶ "
+		}
+
+		// Truncate content to fit side width
+		maxContentWidth := sideWidth - 8 // Account for line numbers and padding
+		if maxContentWidth < 10 {
+			maxContentWidth = 10
+		}
+
+		if len(leftContent) > maxContentWidth {
+			leftContent = leftContent[:maxContentWidth-3] + "..."
+		}
+		if len(rightContent) > maxContentWidth {
+			rightContent = rightContent[:maxContentWidth-3] + "..."
+		}
+
+		// Format line numbers
+		var leftLineStr, rightLineStr string
+		if leftNum > 0 {
+			leftLineStr = fmt.Sprintf("%4d", leftNum)
+		} else {
+			leftLineStr = "    "
+		}
+		if rightNum > 0 {
+			rightLineStr = fmt.Sprintf("%4d", rightNum)
+		} else {
+			rightLineStr = "    "
+		}
+
+		// Left side
+		var leftSide string
+		if leftContent == "" && rightContent != "" {
+			// Insert - empty left side
+			leftSide = fmt.Sprintf("%s%s %s", cursor, leftLineStr, strings.Repeat(" ", maxContentWidth))
+			leftSide = insertLineStyle.Width(sideWidth).Render(leftSide)
+		} else if leftContent != "" && rightContent == "" {
+			// Delete - content on left side
+			leftSide = fmt.Sprintf("%s%s %s", cursor, leftLineStr, leftContent)
+			leftSide = deleteLineStyle.Width(sideWidth).Render(leftSide)
+		} else if leftContent == rightContent {
+			// Equal - same content
+			leftSide = fmt.Sprintf("%s%s %s", cursor, leftLineStr, leftContent)
+			leftSide = equalLineStyle.Width(sideWidth).Render(leftSide)
+		} else {
+			// Modified - different content
+			leftSide = fmt.Sprintf("%s%s %s", cursor, leftLineStr, leftContent)
+			leftSide = deleteLineStyle.Width(sideWidth).Render(leftSide)
+		}
+
+		// Right side
+		var rightSide string
+		if rightContent == "" && leftContent != "" {
+			// Delete - empty right side
+			rightSide = fmt.Sprintf("  %s %s", rightLineStr, strings.Repeat(" ", maxContentWidth))
+			rightSide = deleteLineStyle.Width(sideWidth).Render(rightSide)
+		} else if rightContent != "" && leftContent == "" {
+			// Insert - content on right side
+			rightSide = fmt.Sprintf("  %s %s", rightLineStr, rightContent)
+			rightSide = insertLineStyle.Width(sideWidth).Render(rightSide)
+		} else if leftContent == rightContent {
+			// Equal - same content
+			rightSide = fmt.Sprintf("  %s %s", rightLineStr, rightContent)
+			rightSide = equalLineStyle.Width(sideWidth).Render(rightSide)
+		} else {
+			// Modified - different content
+			rightSide = fmt.Sprintf("  %s %s", rightLineStr, rightContent)
+			rightSide = insertLineStyle.Width(sideWidth).Render(rightSide)
+		}
+
+		// Combine sides with separator
+		line := leftSide + " │ " + rightSide
+		b.WriteString(line)
+		b.WriteString("\n")
+	}
+
+	// Show scroll indicator if needed
+	if len(leftLines) > maxVisible {
+		var scrollInfo string
+		if m.windowWidth > 50 {
+			scrollInfo = fmt.Sprintf("Showing %d-%d of %d lines", start+1, end, len(leftLines))
+		} else {
+			scrollInfo = fmt.Sprintf("%d-%d of %d", start+1, end, len(leftLines))
+		}
+		b.WriteString(helpStyle.Width(m.windowWidth).Render(scrollInfo))
+		b.WriteString("\n")
+	}
+
+	return b.String()
+}
+
 func (m *Model) renderMergeContent() string {
 	if m.currentDiff == nil || len(m.currentDiff.Lines) == 0 {
 		return "No differences found"

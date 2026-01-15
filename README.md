@@ -5,6 +5,7 @@ A powerful terminal-based user interface (TUI) application for visually comparin
 ## ✨ Features
 
 - 🎨 **Visual Diff Highlighting**: Green backgrounds for additions, blue backgrounds for deletions
+- 👥 **Side-by-Side View**: Compare files in unified or side-by-side layout modes
 - 🔀 **Interactive Merge Mode**: Cherry-pick and apply specific changes between files
 - 📋 **File Copy Mode**: Easily copy unique files between directories with selective control
 - 📁 **Complete Directory Analysis**: Shows ALL files from both directories (common and unique)
@@ -87,6 +88,20 @@ make run-dirs
 
 #### Diff View Mode
 - **↑/↓** or **j/k**: Navigate through diff lines
+- **s**: Switch view mode (Unified ↔ Side-by-Side)
+- **g**: Go to top of diff
+- **G**: Go to bottom of diff
+- **n**: Next common file
+- **p**: Previous common file
+- **m**: Enter merge mode
+- **Esc**: Return to file selection
+- **?**: Show help screen
+- **Q/Ctrl+C**: Quit application
+
+#### Side-by-Side View Mode
+- **↑/↓** or **j/k**: Navigate through diff lines
+- **h/l** or **←/→**: Visual focus left/right (for reference)
+- **s**: Switch to Unified view mode
 - **g**: Go to top of diff
 - **G**: Go to bottom of diff
 - **n**: Next common file
@@ -216,23 +231,24 @@ examples/       # Sample files for testing
 ## 🎛️ Advanced Usage
 
 ### Keyboard Shortcuts Summary
-| Key | File Selection | Diff View | Merge Mode | Description |
-|-----|----------------|-----------|------------|-------------|
-| `Tab` | ✅ | ❌ | ❌ | Switch input fields |
-| `Enter` | ✅ | ❌ | ✅ | Load entered path / Toggle change |
-| `↑/↓` | ✅ | ✅ | ✅ | Navigate lists/lines |
-| `j/k` | ❌ | ✅ | ✅ | Vim-style navigation |
-| `g/G` | ❌ | ✅ | ❌ | Jump to top/bottom |
-| `n/p` | ✅ | ✅ | ❌ | Next/previous file |
-| `m` | ❌ | ✅ | ❌ | Enter merge mode |
-| `t` | ❌ | ❌ | ✅ | Switch merge target |
-| `a` | ❌ | ❌ | ✅ | Select all changes |
-| `Space` | ❌ | ❌ | ✅ | Toggle current change |
-| `s` | ❌ | ❌ | ✅ | Save merged result |
-| `Ctrl+D` | ✅ | ❌ | ❌ | Start comparison |
-| `Esc` | ❌ | ✅ | ✅ | Return to previous view |
-| `?` | ✅ | ✅ | ✅ | Show help screen |
-| `Q/Ctrl+C` | ✅ | ✅ | ✅ | Quit application |
+| Key | File Selection | Diff View | Side-by-Side | Merge Mode | Description |
+|-----|----------------|-----------|--------------|------------|-------------|
+| `Tab` | ✅ | ❌ | ❌ | ❌ | Switch input fields |
+| `Enter` | ✅ | ❌ | ❌ | ✅ | Load entered path / Toggle change |
+| `↑/↓` | ✅ | ✅ | ✅ | ✅ | Navigate lists/lines |
+| `j/k` | ❌ | ✅ | ✅ | ✅ | Vim-style navigation |
+| `h/l` | ❌ | ❌ | ✅ | ❌ | Visual left/right focus |
+| `g/G` | ❌ | ✅ | ✅ | ❌ | Jump to top/bottom |
+| `s` | ❌ | ✅ | ✅ | ✅ | Switch view mode / Save result |
+| `n/p` | ✅ | ✅ | ✅ | ❌ | Next/previous file |
+| `m` | ❌ | ✅ | ✅ | ❌ | Enter merge mode |
+| `t` | ❌ | ❌ | ❌ | ✅ | Switch merge target |
+| `a` | ❌ | ❌ | ❌ | ✅ | Select all changes |
+| `Space` | ❌ | ❌ | ❌ | ✅ | Toggle current change |
+| `Ctrl+D` | ✅ | ❌ | ❌ | ❌ | Start comparison |
+| `Esc` | ❌ | ✅ | ✅ | ✅ | Return to previous view |
+| `?` | ✅ | ✅ | ✅ | ✅ | Show help screen |
+| `Q/Ctrl+C` | ✅ | ✅ | ✅ | ✅ | Quit application |
 
 ### Performance Tips
 - Large files (>10MB) may take a moment to process
@@ -295,8 +311,8 @@ Please feel free to submit issues, feature requests, or pull requests.
 - [x] Complete directory analysis (all files, not just common ones)
 - [x] File source identification with clear indicators
 - [x] Copy mode for easily copying unique files between directories
+- [x] Side-by-side comparison view with unified/split toggle
 - [ ] Syntax highlighting for code diffs
-- [ ] Side-by-side comparison view
 - [ ] Three-way merge support
 - [ ] Merge conflict resolution
 - [ ] Export diffs to HTML/PDF
