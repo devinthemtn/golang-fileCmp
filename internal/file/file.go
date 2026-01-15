@@ -119,6 +119,7 @@ func (fi *FileInfo) IsTextFile() bool {
 		".pl", ".pm", ".r", ".R", ".m", ".scala", ".clj", ".hs", ".elm",
 		".dockerfile", ".gitignore", ".gitattributes", ".editorconfig",
 		".makefile", ".cmake", ".ninja", ".gradle", ".pom",
+		".ini", ".cfg", ".conf", ".config", ".properties", ".env",
 	}
 
 	for _, textExt := range textExts {
@@ -173,6 +174,23 @@ func (fi *FileInfo) GetTextFiles() []*FileInfo {
 	return textFiles
 }
 
+// FileSource indicates which side a file comes from
+type FileSource int
+
+const (
+	SourceBoth  FileSource = iota // File exists in both directories
+	SourceLeft                    // File exists only in left directory
+	SourceRight                   // File exists only in right directory
+)
+
+// FileComparison represents a file that may exist on one or both sides
+type FileComparison struct {
+	RelativePath string
+	LeftFile     *FileInfo // nil if file doesn't exist on left
+	RightFile    *FileInfo // nil if file doesn't exist on right
+	Source       FileSource
+}
+
 // FindCommonFiles finds files that exist in both file trees with the same relative path
 func FindCommonFiles(left, right *FileInfo) map[string][2]*FileInfo {
 	leftFiles := make(map[string]*FileInfo)
@@ -202,4 +220,57 @@ func FindCommonFiles(left, right *FileInfo) map[string][2]*FileInfo {
 	}
 
 	return common
+}
+
+// FindAllFiles finds all files from both directories, including unique files
+func FindAllFiles(left, right *FileInfo) map[string]*FileComparison {
+	leftFiles := make(map[string]*FileInfo)
+	rightFiles := make(map[string]*FileInfo)
+
+	// Get all text files and create relative path maps
+	for _, file := range left.GetTextFiles() {
+		rel, err := filepath.Rel(left.Path, file.Path)
+		if err == nil {
+			leftFiles[rel] = file
+		}
+	}
+
+	for _, file := range right.GetTextFiles() {
+		rel, err := filepath.Rel(right.Path, file.Path)
+		if err == nil {
+			rightFiles[rel] = file
+		}
+	}
+
+	// Create comprehensive file comparison map
+	allFiles := make(map[string]*FileComparison)
+
+	// Add all left files
+	for relPath, leftFile := range leftFiles {
+		comparison := &FileComparison{
+			RelativePath: relPath,
+			LeftFile:     leftFile,
+			Source:       SourceLeft,
+		}
+		allFiles[relPath] = comparison
+	}
+
+	// Process right files
+	for relPath, rightFile := range rightFiles {
+		if existing, exists := allFiles[relPath]; exists {
+			// File exists on both sides
+			existing.RightFile = rightFile
+			existing.Source = SourceBoth
+		} else {
+			// File only exists on right side
+			comparison := &FileComparison{
+				RelativePath: relPath,
+				RightFile:    rightFile,
+				Source:       SourceRight,
+			}
+			allFiles[relPath] = comparison
+		}
+	}
+
+	return allFiles
 }

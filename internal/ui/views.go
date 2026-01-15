@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"golang-fileCmp/internal/differ"
+	"golang-fileCmp/internal/file"
 
 	"github.com/charmbracelet/lipgloss"
 )
@@ -95,16 +96,54 @@ func (m *Model) renderFileSelectView() string {
 		b.WriteString("\n")
 	}
 
-	if len(m.commonFiles) > 0 {
-		b.WriteString(fmt.Sprintf("\nFound %d common files:\n", len(m.commonFiles)))
+	if len(m.allFiles) > 0 {
+		commonCount := len(m.commonFiles)
+		totalCount := len(m.allFiles)
+		uniqueCount := totalCount - commonCount
+
+		if commonCount > 0 && uniqueCount > 0 {
+			b.WriteString(fmt.Sprintf("\nFound %d files (%d common, %d unique):\n", totalCount, commonCount, uniqueCount))
+		} else if commonCount > 0 {
+			b.WriteString(fmt.Sprintf("\nFound %d common files:\n", commonCount))
+		} else {
+			b.WriteString(fmt.Sprintf("\nFound %d unique files:\n", uniqueCount))
+		}
+
 		if m.selectedFile != "" {
 			selectedPath := m.selectedFile
-			if len(selectedPath) > maxInputWidth {
-				selectedPath = "..." + selectedPath[len(selectedPath)-maxInputWidth+3:]
+
+			// Truncate path if too long for display
+			maxPathWidth := m.windowWidth - 16 // Leave space for "► Selected: "
+			if maxPathWidth < 20 {
+				maxPathWidth = 20
 			}
-			b.WriteString(selectedFileStyle.Render(fmt.Sprintf("► Selected: %s", selectedPath)))
-			b.WriteString(" ")
-			b.WriteString(helpStyle.Render("(Press Ctrl+D to compare)"))
+			if len(selectedPath) > maxPathWidth {
+				selectedPath = "..." + selectedPath[len(selectedPath)-(maxPathWidth-3):]
+			}
+
+			// Show selected file on one line
+			b.WriteString(selectedFileStyle.Render("► Selected: " + selectedPath))
+			b.WriteString("\n")
+
+			// Show help instruction on separate line to avoid width conflicts
+			var helpText string
+			maxHelpWidth := m.windowWidth - 6 // Conservative margin
+			if maxHelpWidth < 20 {
+				maxHelpWidth = 20
+			}
+
+			if m.windowWidth < 60 {
+				helpText = "Press Ctrl+D to compare"
+			} else {
+				helpText = "Press Ctrl+D to compare, or ↑/↓ to select different file"
+			}
+
+			// Truncate help text if still too long
+			if len(helpText) > maxHelpWidth {
+				helpText = helpText[:maxHelpWidth-3] + "..."
+			}
+
+			b.WriteString(helpStyle.Render("  " + helpText))
 			b.WriteString("\n")
 		}
 		b.WriteString(m.renderFileList())
@@ -131,12 +170,26 @@ func (m *Model) renderFileSelectView() string {
 			helpText = "↑↓: Navigate • Tab: Next • Enter: Accept • Esc: Cancel"
 		}
 	} else {
-		if m.windowWidth > 80 {
-			helpText = "Tab: Switch input • Enter: Load path • ↑↓: Navigate files • Ctrl+D: Compare • ?: Help • Q: Quit"
-		} else if m.windowWidth > 60 {
-			helpText = "Tab: Switch • Enter: Load • ↑↓: Navigate • Ctrl+D: Compare • ?: Help • Q: Quit"
+		if len(m.allFiles) > 0 {
+			// When files are loaded, emphasize the comparison functionality
+			if m.windowWidth > 90 {
+				helpText = "Tab: Switch input • Enter: Load path • ↑↓: Navigate files • Ctrl+D: Compare selected • ?: Help • Q: Quit"
+			} else if m.windowWidth > 70 {
+				helpText = "Tab: Switch • Enter: Load • ↑↓: Navigate • Ctrl+D: Compare • ?: Help • Q: Quit"
+			} else if m.windowWidth > 50 {
+				helpText = "Tab:Switch Enter:Load ↑↓:Navigate Ctrl+D:Compare ?:Help Q:Quit"
+			} else {
+				helpText = "↑↓:Select Ctrl+D:Compare ?:Help Q:Quit"
+			}
 		} else {
-			helpText = "Tab:Switch Enter:Load ↑↓:Navigate Ctrl+D:Compare ?:Help Q:Quit"
+			// When no files are loaded, emphasize the input functionality
+			if m.windowWidth > 80 {
+				helpText = "Tab: Switch input • Enter: Load path • ↑↓: Navigate suggestions • ?: Help • Q: Quit"
+			} else if m.windowWidth > 60 {
+				helpText = "Tab: Switch • Enter: Load • ↑↓: Navigate • ?: Help • Q: Quit"
+			} else {
+				helpText = "Tab:Switch Enter:Load ?:Help Q:Quit"
+			}
 		}
 	}
 	b.WriteString(helpStyle.Width(m.windowWidth - 2).Render(helpText))
@@ -144,15 +197,17 @@ func (m *Model) renderFileSelectView() string {
 	return b.String()
 }
 
-// renderFileList renders the list of common files
+// renderFileList renders the list of all files (common and unique)
 func (m *Model) renderFileList() string {
-	if len(m.commonFiles) == 0 {
+	if len(m.allFiles) == 0 {
 		return ""
 	}
 
 	// Define styles for file status indicators
 	identicalStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#00FF00")).Bold(true) // Green
 	differentStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#FF0000")).Bold(true) // Red
+	leftOnlyStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#0066FF")).Bold(true)  // Blue
+	rightOnlyStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#FF6600")).Bold(true) // Orange
 	sizeStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#888888"))                 // Gray
 
 	// Calculate available space for file list
@@ -170,8 +225,8 @@ func (m *Model) renderFileList() string {
 	}
 
 	// Get all files and sort them for consistent ordering
-	allFiles := make([]string, 0, len(m.commonFiles))
-	for relPath := range m.commonFiles {
+	allFiles := make([]string, 0, len(m.allFiles))
+	for relPath := range m.allFiles {
 		allFiles = append(allFiles, relPath)
 	}
 	// Sort files alphabetically
@@ -215,30 +270,47 @@ func (m *Model) renderFileList() string {
 	var items []string
 	for i := startIndex; i < endIndex; i++ {
 		relPath := allFiles[i]
-		filePair := m.commonFiles[relPath]
-		leftFile := filePair[0]
-		rightFile := filePair[1]
+		fileComparison := m.allFiles[relPath]
 
-		// Check if files are identical
-		isIdentical := leftFile.Content == rightFile.Content
-		var statusIndicator string
-		if isIdentical {
-			statusIndicator = identicalStyle.Render("✓")
-		} else {
-			statusIndicator = differentStyle.Render("✗")
-		}
+		var statusIndicator, sizeInfo, sourceInfo string
 
-		// Format file size (show left file size, or both if different)
-		var sizeInfo string
-		if leftFile.Size == rightFile.Size {
+		switch fileComparison.Source {
+		case file.SourceBoth:
+			leftFile := fileComparison.LeftFile
+			rightFile := fileComparison.RightFile
+
+			// Check if files are identical
+			isIdentical := leftFile.Content == rightFile.Content
+			if isIdentical {
+				statusIndicator = identicalStyle.Render("✓")
+			} else {
+				statusIndicator = differentStyle.Render("✗")
+			}
+
+			// Format file size (show left file size, or both if different)
+			if leftFile.Size == rightFile.Size {
+				sizeInfo = sizeStyle.Render(fmt.Sprintf("(%s)", formatFileSize(leftFile.Size)))
+			} else {
+				sizeInfo = sizeStyle.Render(fmt.Sprintf("(L:%s R:%s)", formatFileSize(leftFile.Size), formatFileSize(rightFile.Size)))
+			}
+			sourceInfo = ""
+
+		case file.SourceLeft:
+			leftFile := fileComparison.LeftFile
+			statusIndicator = leftOnlyStyle.Render("◄")
 			sizeInfo = sizeStyle.Render(fmt.Sprintf("(%s)", formatFileSize(leftFile.Size)))
-		} else {
-			sizeInfo = sizeStyle.Render(fmt.Sprintf("(L:%s R:%s)", formatFileSize(leftFile.Size), formatFileSize(rightFile.Size)))
+			sourceInfo = leftOnlyStyle.Render(" [LEFT ONLY]")
+
+		case file.SourceRight:
+			rightFile := fileComparison.RightFile
+			statusIndicator = rightOnlyStyle.Render("►")
+			sizeInfo = sizeStyle.Render(fmt.Sprintf("(%s)", formatFileSize(rightFile.Size)))
+			sourceInfo = rightOnlyStyle.Render(" [RIGHT ONLY]")
 		}
 
 		// Truncate filename if too long
 		displayPath := relPath
-		baseWidth := 4 + len(sizeInfo) // Account for indicator and size
+		baseWidth := 4 + len(sizeInfo) + len(sourceInfo) // Account for indicator, size, and source info
 		if len(displayPath) > maxFileWidth-baseWidth {
 			maxPathWidth := maxFileWidth - baseWidth - 3 // Account for "..."
 			if maxPathWidth > 0 {
@@ -246,7 +318,7 @@ func (m *Model) renderFileList() string {
 			}
 		}
 
-		fileDisplay := fmt.Sprintf("%s %s %s", statusIndicator, displayPath, sizeInfo)
+		fileDisplay := fmt.Sprintf("%s %s %s%s", statusIndicator, displayPath, sizeInfo, sourceInfo)
 
 		if relPath == m.selectedFile {
 			items = append(items, selectedFileStyle.Width(maxFileWidth).Render("► "+fileDisplay))
@@ -320,11 +392,11 @@ func (m *Model) renderDiffView() string {
 	b.WriteString("\n")
 	var helpText string
 	if m.windowWidth > 80 {
-		helpText = "↑↓/j/k: Navigate • g/G: Top/Bottom • n/p: Next/Prev file • m: Merge • Esc: Back • ?: Help • Q: Quit"
+		helpText = "↑↓/j/k: Navigate • g/G: Top/Bottom • n/p: Next/Prev file (all files) • m: Merge • Esc: Back • ?: Help • Q: Quit"
 	} else if m.windowWidth > 60 {
-		helpText = "↑↓/j/k: Navigate • g/G: Top/Bottom • n/p: Files • m: Merge • Esc: Back • ?: Help • Q: Quit"
+		helpText = "↑↓/j/k: Navigate • g/G: Top/Bottom • n/p: All files • m: Merge • Esc: Back • ?: Help • Q: Quit"
 	} else {
-		helpText = "↑↓:Nav g/G:Top/Bot n/p:Files m:Merge Esc:Back ?:Help Q:Quit"
+		helpText = "↑↓:Nav g/G:Top/Bot n/p:AllFiles m:Merge Esc:Back ?:Help Q:Quit"
 	}
 	b.WriteString(helpStyle.Width(m.windowWidth).Render(helpText))
 
@@ -463,14 +535,33 @@ Color Legend:
 	b.WriteString(unselectedChangeStyle.Render("Strikethrough: Unselected changes (merge mode)"))
 	b.WriteString("\n\n")
 
+	fileIndicators := `File Status Indicators:
+  `
+	b.WriteString(fileIndicators)
+
+	// File status examples
+	identicalStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#00FF00")).Bold(true)
+	differentStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#FF0000")).Bold(true)
+	leftOnlyStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#0066FF")).Bold(true)
+	rightOnlyStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#FF6600")).Bold(true)
+
+	b.WriteString(identicalStyle.Render("✓ Green checkmark: Identical files (same content)"))
+	b.WriteString("\n")
+	b.WriteString(differentStyle.Render("✗ Red X: Different files (content differs)"))
+	b.WriteString("\n")
+	b.WriteString(leftOnlyStyle.Render("◄ Blue arrow: File exists only in LEFT directory"))
+	b.WriteString("\n")
+	b.WriteString(rightOnlyStyle.Render("► Orange arrow: File exists only in RIGHT directory"))
+	b.WriteString("\n\n")
+
 	instructions := `Instructions:
 1. Enter paths to files or directories in the input fields
    - Path suggestions appear automatically as you type
    - Use ↑/↓ or Tab to navigate through suggestions
    - Press Enter to accept a suggestion or Esc to dismiss
 2. Press Enter to load each path
-3. Use ↑/↓ to select which common file to compare
-4. Press Ctrl+D to start comparing
+3. Use ↑/↓ to select which file to compare (shows ALL files, not just common ones)
+4. Press Ctrl+D to start comparing selected file
 5. Navigate through the diff using arrow keys or j/k
 6. Use n/p to switch between different files
 7. Press 'm' in diff view to enter merge mode
@@ -483,10 +574,14 @@ Merge Workflow:
 - Use 'a' to select all or 'n' to select none
 - Switch target file with 't' (left or right)
 - Save merged result with 's' - creates .merged file
+- Apply changes in either direction (left-to-right or right-to-left)
 
-Note: Only text files will be compared. The tool automatically
-detects common text file extensions and filenames. Path suggestions
-include files and directories from your current working directory.`
+File Comparison Notes:
+- Shows ALL files from both directories, not just common ones
+- Files unique to one side show [LEFT ONLY] or [RIGHT ONLY] tags
+- Unique files can still be "compared" (shown as all additions or deletions)
+- Only text files are included (detects common extensions automatically)
+- Path suggestions include files and directories from your current working directory`
 
 	b.WriteString(instructions)
 	b.WriteString("\n\n")

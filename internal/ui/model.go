@@ -38,6 +38,7 @@ type Model struct {
 	leftFile       *file.FileInfo
 	rightFile      *file.FileInfo
 	commonFiles    map[string][2]*file.FileInfo
+	allFiles       map[string]*file.FileComparison
 	selectedFile   string
 	fileListScroll int
 
@@ -168,6 +169,7 @@ func New() *Model {
 		merger:          merge.New(),
 		focusLeft:       true,
 		commonFiles:     make(map[string][2]*file.FileInfo),
+		allFiles:        make(map[string]*file.FileComparison),
 		leftSuggIndex:   -1,
 		rightSuggIndex:  -1,
 		showSuggestions: false,
@@ -279,7 +281,7 @@ func (m *Model) handleFileSelectKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "ctrl+d":
-		if len(m.commonFiles) > 0 {
+		if len(m.allFiles) > 0 {
 			// If no file is selected, select the first one
 			if m.selectedFile == "" {
 				files := m.getSortedFiles()
@@ -335,7 +337,7 @@ func (m *Model) handleFileSelectKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 		}
-		if len(m.commonFiles) > 0 {
+		if len(m.allFiles) > 0 {
 			m.selectPreviousFile()
 			// Only auto-load diff if we're in file selection mode
 			// In diff mode, user needs to press Ctrl+D or navigate with n/p
@@ -352,7 +354,7 @@ func (m *Model) handleFileSelectKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 		}
-		if len(m.commonFiles) > 0 {
+		if len(m.allFiles) > 0 {
 			m.selectNextFile()
 			// Only auto-load diff if we're in file selection mode
 			// In diff mode, user needs to press Ctrl+D or navigate with n/p
@@ -432,8 +434,22 @@ func (m *Model) handleDiffKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "m":
 		// Enter merge mode if we have a diff loaded
 		if m.currentDiff != nil {
-			m.initializeMergeMode()
-			m.viewMode = ViewModeMerge
+			// Check if this is a valid file for merging
+			if m.selectedFile != "" {
+				if fileComparison, exists := m.allFiles[m.selectedFile]; exists {
+					if fileComparison.Source == file.SourceBoth {
+						m.initializeMergeMode()
+						m.viewMode = ViewModeMerge
+					} else {
+						// Cannot merge files that only exist on one side
+						if fileComparison.Source == file.SourceLeft {
+							m.errorMsg = "Cannot merge: File exists only in LEFT directory"
+						} else {
+							m.errorMsg = "Cannot merge: File exists only in RIGHT directory"
+						}
+					}
+				}
+			}
 		}
 		return m, nil
 	}
@@ -561,19 +577,20 @@ func (m *Model) loadRightPath() {
 func (m *Model) updateCommonFiles() {
 	if m.leftFile != nil && m.rightFile != nil {
 		m.commonFiles = file.FindCommonFiles(m.leftFile, m.rightFile)
+		m.allFiles = file.FindAllFiles(m.leftFile, m.rightFile)
 		m.fileListScroll = 0 // Reset scroll when files change
 
 		// Select first file by default if none selected
-		if len(m.commonFiles) > 0 && m.selectedFile == "" {
+		if len(m.allFiles) > 0 && m.selectedFile == "" {
 			files := m.getSortedFiles()
 			if len(files) > 0 {
 				m.selectedFile = files[0]
 			}
 		}
 
-		// Ensure selected file still exists in the new common files
+		// Ensure selected file still exists in the new file list
 		if m.selectedFile != "" {
-			if _, exists := m.commonFiles[m.selectedFile]; !exists {
+			if _, exists := m.allFiles[m.selectedFile]; !exists {
 				files := m.getSortedFiles()
 				if len(files) > 0 {
 					m.selectedFile = files[0]
@@ -586,8 +603,8 @@ func (m *Model) updateCommonFiles() {
 }
 
 func (m *Model) getSortedFiles() []string {
-	files := make([]string, 0, len(m.commonFiles))
-	for relPath := range m.commonFiles {
+	files := make([]string, 0, len(m.allFiles))
+	for relPath := range m.allFiles {
 		files = append(files, relPath)
 	}
 
@@ -604,7 +621,7 @@ func (m *Model) getSortedFiles() []string {
 }
 
 func (m *Model) selectNextFile() {
-	if len(m.commonFiles) == 0 {
+	if len(m.allFiles) == 0 {
 		return
 	}
 
@@ -626,7 +643,7 @@ func (m *Model) selectNextFile() {
 }
 
 func (m *Model) selectPreviousFile() {
-	if len(m.commonFiles) == 0 {
+	if len(m.allFiles) == 0 {
 		return
 	}
 
@@ -653,20 +670,41 @@ func (m *Model) loadDiff() {
 		return
 	}
 
-	filePair, exists := m.commonFiles[m.selectedFile]
+	fileComparison, exists := m.allFiles[m.selectedFile]
 	if !exists {
-		m.errorMsg = fmt.Sprintf("Selected file '%s' no longer exists in common files", m.selectedFile)
+		m.errorMsg = fmt.Sprintf("Selected file '%s' no longer exists", m.selectedFile)
 		return
 	}
 
-	leftFile := filePair[0]
-	rightFile := filePair[1]
+	var leftContent, rightContent, leftPath, rightPath string
+
+	switch fileComparison.Source {
+	case file.SourceBoth:
+		leftFile := fileComparison.LeftFile
+		rightFile := fileComparison.RightFile
+		leftContent = leftFile.Content
+		rightContent = rightFile.Content
+		leftPath = leftFile.Path
+		rightPath = rightFile.Path
+	case file.SourceLeft:
+		leftFile := fileComparison.LeftFile
+		leftContent = leftFile.Content
+		rightContent = ""
+		leftPath = leftFile.Path
+		rightPath = "<file not found>"
+	case file.SourceRight:
+		rightFile := fileComparison.RightFile
+		leftContent = ""
+		rightContent = rightFile.Content
+		leftPath = "<file not found>"
+		rightPath = rightFile.Path
+	}
 
 	diff := m.differ.CompareStrings(
-		leftFile.Path,
-		rightFile.Path,
-		leftFile.Content,
-		rightFile.Content,
+		leftPath,
+		rightPath,
+		leftContent,
+		rightContent,
 	)
 
 	m.currentDiff = diff
@@ -688,10 +726,10 @@ func (m *Model) SetLeftPath(path string) {
 	m.leftPath = path
 	m.loadLeftPath()
 
-	// If we already have a right file, update common files and select first
+	// If we already have a right file, update files and select first
 	if m.rightFile != nil {
 		m.updateCommonFiles()
-		if len(m.commonFiles) > 0 && m.selectedFile == "" {
+		if len(m.allFiles) > 0 && m.selectedFile == "" {
 			files := m.getSortedFiles()
 			if len(files) > 0 {
 				m.selectedFile = files[0]
@@ -708,7 +746,7 @@ func (m *Model) SetRightPath(path string) {
 	m.updateCommonFiles()
 
 	// Ensure first file is selected when both paths are loaded
-	if m.leftFile != nil && m.rightFile != nil && len(m.commonFiles) > 0 && m.selectedFile == "" {
+	if m.leftFile != nil && m.rightFile != nil && len(m.allFiles) > 0 && m.selectedFile == "" {
 		files := m.getSortedFiles()
 		if len(files) > 0 {
 			m.selectedFile = files[0]
@@ -824,10 +862,16 @@ func (m *Model) initializeMergeMode() {
 		return
 	}
 
-	m.changeSelection = merge.NewChangeSelection(m.currentDiff)
-	m.updateMergePreview()
-	m.cursor = 0
-	m.scrollOffset = 0
+	// Only initialize merge mode for files that exist on both sides
+	if m.selectedFile != "" {
+		if fileComparison, exists := m.allFiles[m.selectedFile]; exists && fileComparison.Source == file.SourceBoth {
+			m.changeSelection = merge.NewChangeSelection(m.currentDiff)
+			m.updateMergePreview()
+			m.cursor = 0
+			m.scrollOffset = 0
+			m.errorMsg = "" // Clear any previous error
+		}
+	}
 }
 
 // updateMergePreview updates the merge preview text

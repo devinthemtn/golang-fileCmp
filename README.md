@@ -6,7 +6,8 @@ A powerful terminal-based user interface (TUI) application for visually comparin
 
 - 🎨 **Visual Diff Highlighting**: Green backgrounds for additions, blue backgrounds for deletions
 - 🔀 **Interactive Merge Mode**: Cherry-pick and apply specific changes between files
-- 📁 **Smart Directory Comparison**: Automatically finds and compares common files between directories
+- 📁 **Complete Directory Analysis**: Shows ALL files from both directories (common and unique)
+- 🏷️ **Source Identification**: Clear indicators for files that exist in only one directory
 - ⌨️ **Intuitive Controls**: Vim-like navigation (j/k) with full arrow key support
 - 🔍 **Intelligent File Detection**: Automatically identifies 50+ text file types for comparison
 - 📊 **Real-time Diff Statistics**: Live counts of equal, added, and deleted lines
@@ -105,11 +106,18 @@ make run-dirs
 
 ## Color Legend
 
+### Diff Colors
 - **Green background**: Added lines (+)
 - **Blue background**: Deleted lines (-)
 - **Gray text**: Unchanged lines
 - **Yellow background**: Selected changes (merge mode)
 - **Strikethrough text**: Unselected changes (merge mode)
+
+### File Status Indicators
+- **✓ Green checkmark**: Identical files (same content in both directories)
+- **✗ Red X**: Different files (content differs between directories)
+- **◄ Blue arrow**: File exists only in LEFT directory **[LEFT ONLY]**
+- **► Orange arrow**: File exists only in RIGHT directory **[RIGHT ONLY]**
 
 ## 📄 Supported File Types
 
@@ -136,12 +144,13 @@ The tool intelligently detects and compares 50+ text file types:
 ## How It Works
 
 1. **Load Paths**: Enter file or directory paths in the input fields
-2. **Find Common Files**: For directories, the tool finds files that exist in both locations with the same relative path
-3. **Select File**: Choose which common file to compare using the arrow keys
-4. **View Diff**: See the side-by-side comparison with color-coded changes
-5. **Navigate**: Move through the diff and switch between files seamlessly
-6. **Merge Changes**: Press 'm' to enter merge mode and selectively apply changes
-7. **Save Results**: Choose which changes to keep and save the merged file
+2. **Analyze All Files**: For directories, the tool finds ALL text files from both locations
+3. **Categorize Files**: Files are marked as common (both sides), left-only, or right-only
+4. **Select File**: Choose any file to compare using the arrow keys
+5. **View Diff**: See the comparison with color-coded changes
+6. **Navigate**: Move through all files (common and unique) seamlessly
+7. **Merge Changes**: Press 'm' to enter merge mode (only for common files)
+8. **Save Results**: Choose which changes to keep and save the merged file
 
 ## Examples
 
@@ -252,12 +261,16 @@ Contributions are welcome! Areas for improvement:
 - Export diff results
 - Configuration file support
 - Undo/redo for merge operations
+- Directory structure visualization
+- File filtering and search capabilities
 
 Please feel free to submit issues, feature requests, or pull requests.
 
 ## 📋 Roadmap
 
 - [x] Interactive merge mode with selective change application
+- [x] Complete directory analysis (all files, not just common ones)
+- [x] File source identification with clear indicators
 - [ ] Syntax highlighting for code diffs
 - [ ] Side-by-side comparison view
 - [ ] Three-way merge support
@@ -267,3 +280,5 @@ Please feel free to submit issues, feature requests, or pull requests.
 - [ ] Plugin system for custom file types
 - [ ] Integration with Git for commit diffs
 - [ ] Undo/redo functionality in merge mode
+- [ ] File filtering and search capabilities
+- [ ] Directory tree visualization

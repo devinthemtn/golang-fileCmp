@@ -79,6 +79,21 @@ demo-merge-simple:
 	@echo "🔀 Running simple merge demo..."
 	@./demo-merge.sh
 
+# Demo the all files functionality (common + unique files)
+demo-all-files:
+	@echo "📁 Running all files demo..."
+	@./demo-all-files.sh
+
+# Test responsive design at different terminal widths
+test-responsive:
+	@echo "📱 Running responsive design test..."
+	@./test-responsive.sh
+
+# Test width fix for selected file status
+test-width-fix:
+	@echo "📏 Testing width fix for selected file status..."
+	@./test-width-fix.sh
+
 # Clean build artifacts
 clean:
 	@echo "🧹 Cleaning build artifacts..."
@@ -110,6 +125,9 @@ help:
 	@echo "  demo          Run demo script"
 	@echo "  demo-merge    Run comprehensive merge demo"
 	@echo "  demo-merge-simple Run simple merge demo"
+	@echo "  demo-all-files Run all files demo (common + unique)"
+	@echo "  test-responsive Test responsive design at different widths"
+	@echo "  test-width-fix Test selected file status width fix"
 	@echo "  clean         Clean build artifacts"
 	@echo "  install       Install to system PATH"
 	@echo "  help          Show this help message"
@@ -118,6 +136,9 @@ help:
 	@echo "  make build              # Build the application"
 	@echo "  make demo               # Show demo with examples"
 	@echo "  make demo-merge         # Show merge functionality demo"
+	@echo "  make demo-all-files     # Show all files functionality demo"
+	@echo "  make test-responsive    # Test UI at different terminal widths"
+	@echo "  make test-width-fix     # Test selected file status width fix"
 	@echo "  make run-files          # Quick test with sample files"
 	@echo "  make install            # Install system-wide"
 	@echo ""
