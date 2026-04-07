@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"golang-fileCmp/internal/differ"
@@ -146,6 +147,14 @@ func (m *Model) renderFileSelectView() string {
 			b.WriteString(helpStyle.Render("  " + helpText))
 			b.WriteString("\n")
 		}
+
+		// Filter bar
+		if m.filterActive {
+			filterDisplay := m.filterQuery + "│"
+			b.WriteString(focusedInputStyle.Width(m.windowWidth-4).Render("Filter: " + filterDisplay))
+			b.WriteString("\n")
+		}
+
 		b.WriteString(m.renderFileList())
 	}
 
@@ -163,7 +172,9 @@ func (m *Model) renderFileSelectView() string {
 	// Help text - adapt to width
 	b.WriteString("\n")
 	var helpText string
-	if m.showSuggestions {
+	if m.filterActive {
+		helpText = "Type to filter • Backspace: delete • Esc: clear filter • ↑↓: Navigate • Ctrl+D: Compare"
+	} else if m.showSuggestions {
 		if m.windowWidth > 80 {
 			helpText = "↑↓: Navigate suggestions • Tab: Next suggestion • Enter: Accept • Esc: Cancel"
 		} else {
@@ -173,13 +184,13 @@ func (m *Model) renderFileSelectView() string {
 		if len(m.allFiles) > 0 {
 			// When files are loaded, emphasize the comparison functionality
 			if m.windowWidth > 100 {
-				helpText = "Tab: Switch input • Enter: Load path • ↑↓: Navigate files • Ctrl+D: Compare • c: Copy unique files • ?: Help • Q: Quit"
+				helpText = "Tab: Switch input • Enter: Load path • ↑↓: Navigate files • Ctrl+D: Compare • /: Filter • c: Copy • ?: Help • Q: Quit"
 			} else if m.windowWidth > 80 {
-				helpText = "Tab: Switch • Enter: Load • ↑↓: Navigate • Ctrl+D: Compare • c: Copy • ?: Help • Q: Quit"
+				helpText = "Tab: Switch • Enter: Load • ↑↓: Navigate • Ctrl+D: Compare • /: Filter • c: Copy • ?: Help • Q: Quit"
 			} else if m.windowWidth > 60 {
-				helpText = "Tab:Switch Enter:Load ↑↓:Navigate Ctrl+D:Compare c:Copy ?:Help Q:Quit"
+				helpText = "Tab:Switch Enter:Load ↑↓:Nav Ctrl+D:Compare /:Filter c:Copy ?:Help Q:Quit"
 			} else {
-				helpText = "↑↓:Select Ctrl+D:Compare c:Copy ?:Help Q:Quit"
+				helpText = "↑↓:Select Ctrl+D:Compare /:Filter Q:Quit"
 			}
 		} else {
 			// When no files are loaded, emphasize the input functionality
@@ -215,6 +226,9 @@ func (m *Model) renderFileList() string {
 	if m.showSuggestions {
 		usedHeight += 10 // More space used by suggestions
 	}
+	if m.filterActive {
+		usedHeight += 2 // Space for filter bar
+	}
 	if m.errorMsg != "" {
 		usedHeight += 3 // Space for error message
 	}
@@ -224,18 +238,22 @@ func (m *Model) renderFileList() string {
 		availableHeight = 5
 	}
 
-	// Get all files and sort them for consistent ordering
+	// Get all files, sorted, then filtered
 	allFiles := make([]string, 0, len(m.allFiles))
 	for relPath := range m.allFiles {
 		allFiles = append(allFiles, relPath)
 	}
-	// Sort files alphabetically
-	for i := 0; i < len(allFiles)-1; i++ {
-		for j := i + 1; j < len(allFiles); j++ {
-			if allFiles[i] > allFiles[j] {
-				allFiles[i], allFiles[j] = allFiles[j], allFiles[i]
+	sort.Strings(allFiles)
+
+	if m.filterActive && m.filterQuery != "" {
+		query := strings.ToLower(m.filterQuery)
+		filtered := allFiles[:0]
+		for _, f := range allFiles {
+			if strings.Contains(strings.ToLower(f), query) {
+				filtered = append(filtered, f)
 			}
 		}
+		allFiles = filtered
 	}
 
 	// Find current selection index
@@ -308,11 +326,12 @@ func (m *Model) renderFileList() string {
 			sourceInfo = rightOnlyStyle.Render(" [RIGHT ONLY]")
 		}
 
-		// Truncate filename if too long
+		// Truncate filename if too long.
+		// Use lipgloss.Width to measure rendered strings — len() counts ANSI escape bytes too.
 		displayPath := relPath
-		baseWidth := 4 + len(sizeInfo) + len(sourceInfo) // Account for indicator, size, and source info
+		baseWidth := 4 + lipgloss.Width(sizeInfo) + lipgloss.Width(sourceInfo)
 		if len(displayPath) > maxFileWidth-baseWidth {
-			maxPathWidth := maxFileWidth - baseWidth - 3 // Account for "..."
+			maxPathWidth := maxFileWidth - baseWidth - 3 // 3 for "..."
 			if maxPathWidth > 0 {
 				displayPath = "..." + displayPath[len(displayPath)-maxPathWidth:]
 			}
@@ -897,156 +916,100 @@ func (m *Model) renderCopyContent() string {
 	return b.String()
 }
 
-// renderMergeContent renders the diff lines with selection indicators
+// renderSideBySideContent renders the diff in a two-column layout using
+// precomputed SideBySideRows so that changed lines appear aligned side-by-side.
 func (m *Model) renderSideBySideContent() string {
-	if m.currentDiff == nil || len(m.currentDiff.Lines) == 0 {
+	if len(m.sbsRows) == 0 {
 		return "No differences found"
 	}
 
 	var b strings.Builder
-	maxVisible := m.windowHeight - 10 // Account for header, stats, and help text
+	maxVisible := m.windowHeight - 10 // account for header, stats, help
 	if maxVisible < 5 {
 		maxVisible = 5
 	}
 
-	// Calculate available width for each side
-	sideWidth := (m.windowWidth - 5) / 2 // -5 for separator and padding
+	sideWidth := (m.windowWidth - 5) / 2 // -5 for " │ " separator
 	if sideWidth < 20 {
 		sideWidth = 20
+	}
+	maxContentWidth := sideWidth - 8 // leave room for cursor (2) + line num (4) + space (1) + margin (1)
+	if maxContentWidth < 10 {
+		maxContentWidth = 10
 	}
 
 	start := m.scrollOffset
 	end := start + maxVisible
-	if end > len(m.currentDiff.Lines) {
-		end = len(m.currentDiff.Lines)
+	if end > len(m.sbsRows) {
+		end = len(m.sbsRows)
 	}
 
-	// Reconstruct original file lines from diff data
-	leftLines := make([]string, 0)
-	rightLines := make([]string, 0)
-	leftLineNums := make([]int, 0)
-	rightLineNums := make([]int, 0)
+	for i := start; i < end; i++ {
+		row := m.sbsRows[i]
 
-	leftLineNum := 1
-	rightLineNum := 1
-
-	// Process diff to reconstruct side-by-side view
-	for _, line := range m.currentDiff.Lines {
-		switch line.Type {
-		case differ.DiffEqual:
-			leftLines = append(leftLines, line.Content)
-			rightLines = append(rightLines, line.Content)
-			leftLineNums = append(leftLineNums, leftLineNum)
-			rightLineNums = append(rightLineNums, rightLineNum)
-			leftLineNum++
-			rightLineNum++
-		case differ.DiffDelete:
-			leftLines = append(leftLines, line.Content)
-			rightLines = append(rightLines, "")
-			leftLineNums = append(leftLineNums, leftLineNum)
-			rightLineNums = append(rightLineNums, -1) // No line number for empty right side
-			leftLineNum++
-		case differ.DiffInsert:
-			leftLines = append(leftLines, "")
-			rightLines = append(rightLines, line.Content)
-			leftLineNums = append(leftLineNums, -1) // No line number for empty left side
-			rightLineNums = append(rightLineNums, rightLineNum)
-			rightLineNum++
-		}
-	}
-
-	// Render visible lines
-	for i := start; i < end && i < len(leftLines); i++ {
-		leftContent := leftLines[i]
-		rightContent := rightLines[i]
-		leftNum := leftLineNums[i]
-		rightNum := rightLineNums[i]
-
-		// Cursor indicator
-		cursor := "  "
-		if i == m.leftCursor {
-			cursor = "▶ "
+		cursorStr := "  "
+		if i == m.cursor {
+			cursorStr = "▶ "
 		}
 
-		// Truncate content to fit side width
-		maxContentWidth := sideWidth - 8 // Account for line numbers and padding
-		if maxContentWidth < 10 {
-			maxContentWidth = 10
+		// Format line number gutters
+		leftNumStr := "    "
+		if row.LeftLineNum > 0 {
+			leftNumStr = fmt.Sprintf("%4d", row.LeftLineNum)
+		}
+		rightNumStr := "    "
+		if row.RightLineNum > 0 {
+			rightNumStr = fmt.Sprintf("%4d", row.RightLineNum)
 		}
 
-		if len(leftContent) > maxContentWidth {
-			leftContent = leftContent[:maxContentWidth-3] + "..."
+		// Apply horizontal scroll then truncate to fit column
+		lc := row.LeftContent
+		rc := row.RightContent
+		if m.hScrollOffset > 0 {
+			if m.hScrollOffset < len(lc) {
+				lc = lc[m.hScrollOffset:]
+			} else {
+				lc = ""
+			}
+			if m.hScrollOffset < len(rc) {
+				rc = rc[m.hScrollOffset:]
+			} else {
+				rc = ""
+			}
 		}
-		if len(rightContent) > maxContentWidth {
-			rightContent = rightContent[:maxContentWidth-3] + "..."
+		if len(lc) > maxContentWidth {
+			lc = lc[:maxContentWidth-3] + "..."
 		}
-
-		// Format line numbers
-		var leftLineStr, rightLineStr string
-		if leftNum > 0 {
-			leftLineStr = fmt.Sprintf("%4d", leftNum)
-		} else {
-			leftLineStr = "    "
-		}
-		if rightNum > 0 {
-			rightLineStr = fmt.Sprintf("%4d", rightNum)
-		} else {
-			rightLineStr = "    "
-		}
-
-		// Left side
-		var leftSide string
-		if leftContent == "" && rightContent != "" {
-			// Insert - empty left side
-			leftSide = fmt.Sprintf("%s%s %s", cursor, leftLineStr, strings.Repeat(" ", maxContentWidth))
-			leftSide = insertLineStyle.Width(sideWidth).Render(leftSide)
-		} else if leftContent != "" && rightContent == "" {
-			// Delete - content on left side
-			leftSide = fmt.Sprintf("%s%s %s", cursor, leftLineStr, leftContent)
-			leftSide = deleteLineStyle.Width(sideWidth).Render(leftSide)
-		} else if leftContent == rightContent {
-			// Equal - same content
-			leftSide = fmt.Sprintf("%s%s %s", cursor, leftLineStr, leftContent)
-			leftSide = equalLineStyle.Width(sideWidth).Render(leftSide)
-		} else {
-			// Modified - different content
-			leftSide = fmt.Sprintf("%s%s %s", cursor, leftLineStr, leftContent)
-			leftSide = deleteLineStyle.Width(sideWidth).Render(leftSide)
+		if len(rc) > maxContentWidth {
+			rc = rc[:maxContentWidth-3] + "..."
 		}
 
-		// Right side
-		var rightSide string
-		if rightContent == "" && leftContent != "" {
-			// Delete - empty right side
-			rightSide = fmt.Sprintf("  %s %s", rightLineStr, strings.Repeat(" ", maxContentWidth))
-			rightSide = deleteLineStyle.Width(sideWidth).Render(rightSide)
-		} else if rightContent != "" && leftContent == "" {
-			// Insert - content on right side
-			rightSide = fmt.Sprintf("  %s %s", rightLineStr, rightContent)
-			rightSide = insertLineStyle.Width(sideWidth).Render(rightSide)
-		} else if leftContent == rightContent {
-			// Equal - same content
-			rightSide = fmt.Sprintf("  %s %s", rightLineStr, rightContent)
-			rightSide = equalLineStyle.Width(sideWidth).Render(rightSide)
-		} else {
-			// Modified - different content
-			rightSide = fmt.Sprintf("  %s %s", rightLineStr, rightContent)
-			rightSide = insertLineStyle.Width(sideWidth).Render(rightSide)
+		var leftSide, rightSide string
+		switch row.Type {
+		case differ.SBSEqual:
+			leftSide = equalLineStyle.Width(sideWidth).Render(fmt.Sprintf("%s%s %s", cursorStr, leftNumStr, lc))
+			rightSide = equalLineStyle.Width(sideWidth).Render(fmt.Sprintf("  %s %s", rightNumStr, rc))
+		case differ.SBSDelete:
+			leftSide = deleteLineStyle.Width(sideWidth).Render(fmt.Sprintf("%s%s %s", cursorStr, leftNumStr, lc))
+			rightSide = emptyDiffStyle.Width(sideWidth).Render(fmt.Sprintf("  %s", rightNumStr))
+		case differ.SBSInsert:
+			leftSide = emptyDiffStyle.Width(sideWidth).Render(fmt.Sprintf("%s%s", cursorStr, leftNumStr))
+			rightSide = insertLineStyle.Width(sideWidth).Render(fmt.Sprintf("  %s %s", rightNumStr, rc))
+		case differ.SBSModified:
+			leftSide = deleteLineStyle.Width(sideWidth).Render(fmt.Sprintf("%s%s %s", cursorStr, leftNumStr, lc))
+			rightSide = insertLineStyle.Width(sideWidth).Render(fmt.Sprintf("  %s %s", rightNumStr, rc))
 		}
 
-		// Combine sides with separator
-		line := leftSide + " │ " + rightSide
-		b.WriteString(line)
+		b.WriteString(leftSide + " │ " + rightSide)
 		b.WriteString("\n")
 	}
 
-	// Show scroll indicator if needed
-	if len(leftLines) > maxVisible {
+	if len(m.sbsRows) > maxVisible {
 		var scrollInfo string
 		if m.windowWidth > 50 {
-			scrollInfo = fmt.Sprintf("Showing %d-%d of %d lines", start+1, end, len(leftLines))
+			scrollInfo = fmt.Sprintf("Showing %d-%d of %d lines", start+1, end, len(m.sbsRows))
 		} else {
-			scrollInfo = fmt.Sprintf("%d-%d of %d", start+1, end, len(leftLines))
+			scrollInfo = fmt.Sprintf("%d-%d of %d", start+1, end, len(m.sbsRows))
 		}
 		b.WriteString(helpStyle.Width(m.windowWidth).Render(scrollInfo))
 		b.WriteString("\n")

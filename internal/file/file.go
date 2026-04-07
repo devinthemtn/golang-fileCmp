@@ -112,8 +112,8 @@ func (fi *FileInfo) IsTextFile() bool {
 
 	ext := strings.ToLower(filepath.Ext(fi.Path))
 	textExts := []string{
-		".txt", ".md", ".go", ".js", ".py", ".java", ".c", ".cpp", ".h", ".hpp",
-		".css", ".html", ".htm", ".xml", ".json", ".yaml", ".yml", ".toml",
+		".txt", ".md", ".go", ".js", ".ts", ".py", ".java", ".c", ".cpp", ".h", ".hpp",
+		".css", ".html", ".htm", ".xml", ".json", ".yaml", ".yml", ".toml", ".csv",
 		".sh", ".bash", ".zsh", ".fish", ".ps1", ".bat", ".cmd", ".sql",
 		".php", ".rb", ".rs", ".swift", ".kt", ".cs", ".vb", ".fs",
 		".pl", ".pm", ".r", ".R", ".m", ".scala", ".clj", ".hs", ".elm",

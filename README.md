@@ -213,7 +213,7 @@ Then enter paths interactively using the TUI.
 ### Core Components
 - **TUI Layer**: Built with [Bubble Tea](https://github.com/charmbracelet/bubbletea) for responsive terminal interface
 - **Styling**: [Lip Gloss](https://github.com/charmbracelet/lipgloss) for beautiful colors and layouts  
-- **Diff Engine**: [go-diff](https://github.com/sergi/go-diff) with semantic cleanup for accurate comparisons
+- **Diff Engine**: LCS-based line-level diff for accurate comparisons
 - **File System**: Smart file detection and recursive directory traversal
 
 ### Project Structure

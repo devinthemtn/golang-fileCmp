@@ -9,6 +9,7 @@ import (
 
 	"golang-fileCmp/internal/differ"
 	"golang-fileCmp/internal/file"
+	"golang-fileCmp/internal/git"
 	"golang-fileCmp/internal/merge"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -52,12 +53,12 @@ type Model struct {
 	fileListScroll int
 
 	// Diff view
-	currentDiff  *differ.FileDiff
-	scrollOffset int
-	cursor       int
-	diffViewMode DiffViewMode
-	leftCursor   int // Cursor position for left side in side-by-side view
-	rightCursor  int // Cursor position for right side in side-by-side view
+	currentDiff   *differ.FileDiff
+	sbsRows       []differ.SideBySideRow // precomputed side-by-side rows (cached from currentDiff)
+	scrollOffset  int
+	hScrollOffset int // horizontal scroll for side-by-side view
+	cursor        int
+	diffViewMode  DiffViewMode
 
 	// Merge view
 	changeSelection *merge.ChangeSelection
@@ -86,6 +87,10 @@ type Model struct {
 	leftSuggIndex    int
 	rightSuggIndex   int
 	showSuggestions  bool
+
+	// File list filter
+	filterQuery string
+	filterActive bool
 }
 
 // Styles for the UI
@@ -154,6 +159,11 @@ var (
 				Background(lipgloss.Color("#DDDDDD")).
 				Foreground(lipgloss.Color("#000000"))
 
+	// Empty cell in side-by-side view (the blank side of an insert or delete row)
+	emptyDiffStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#444444")).
+			Background(lipgloss.Color("#111111"))
+
 	// Merge mode styles
 	mergeHeaderStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("#FAFAFA")).
@@ -190,12 +200,10 @@ func New() *Model {
 		rightSuggIndex:  -1,
 		showSuggestions: false,
 		fileListScroll:  0,
-		mergeTarget:     "left",
-		copySelection:   make(map[string]bool),
-		copyTarget:      "to-right",
-		diffViewMode:    DiffViewUnified,
-		leftCursor:      0,
-		rightCursor:     0,
+		mergeTarget:   "left",
+		copySelection: make(map[string]bool),
+		copyTarget:    "to-right",
+		diffViewMode:  DiffViewUnified,
 	}
 }
 
@@ -327,6 +335,12 @@ func (m *Model) handleFileSelectKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "backspace":
+		if m.filterActive {
+			if len(m.filterQuery) > 0 {
+				m.filterQuery = m.filterQuery[:len(m.filterQuery)-1]
+			}
+			return m, nil
+		}
 		if m.focusLeft {
 			if len(m.inputLeft) > 0 {
 				m.inputLeft = m.inputLeft[:len(m.inputLeft)-1]
@@ -341,6 +355,11 @@ func (m *Model) handleFileSelectKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "esc":
+		if m.filterActive {
+			m.filterActive = false
+			m.filterQuery = ""
+			return m, nil
+		}
 		m.clearSuggestions()
 		return m, nil
 
@@ -386,7 +405,21 @@ func (m *Model) handleFileSelectKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case "/":
+		if len(m.allFiles) > 0 {
+			m.filterActive = true
+			m.filterQuery = ""
+		}
+		return m, nil
+
 	default:
+		if m.filterActive {
+			// Route all printable characters to the filter query
+			if len(msg.String()) == 1 {
+				m.filterQuery += msg.String()
+			}
+			return m, nil
+		}
 		// Add character to appropriate input
 		if len(msg.String()) == 1 {
 			if m.focusLeft {
@@ -411,88 +444,48 @@ func (m *Model) handleDiffKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "up", "k":
-		if m.diffViewMode == DiffViewUnified {
-			if m.cursor > 0 {
-				m.cursor--
-				if m.cursor < m.scrollOffset {
-					m.scrollOffset = m.cursor
-				}
-			}
-		} else {
-			// Side-by-side mode: move up in both sides
-			if m.leftCursor > 0 {
-				m.leftCursor--
-				m.rightCursor--
-				if m.leftCursor < m.scrollOffset {
-					m.scrollOffset = m.leftCursor
-				}
+		if m.cursor > 0 {
+			m.cursor--
+			if m.cursor < m.scrollOffset {
+				m.scrollOffset = m.cursor
 			}
 		}
 		return m, nil
 
 	case "down", "j":
-		if m.diffViewMode == DiffViewUnified {
-			if m.currentDiff != nil && m.cursor < len(m.currentDiff.Lines)-1 {
-				m.cursor++
-				maxVisible := m.windowHeight - 10 // Account for header and footer
-				if m.cursor >= m.scrollOffset+maxVisible {
-					m.scrollOffset = m.cursor - maxVisible + 1
-				}
-			}
-		} else {
-			// Side-by-side mode: move down in both sides
-			if m.currentDiff != nil {
-				maxLines := m.getMaxSideBySideLines()
-				if m.leftCursor < maxLines-1 {
-					m.leftCursor++
-					m.rightCursor++
-					maxVisible := m.windowHeight - 10
-					if m.leftCursor >= m.scrollOffset+maxVisible {
-						m.scrollOffset = m.leftCursor - maxVisible + 1
-					}
-				}
+		maxLines := m.maxDiffLines()
+		if m.cursor < maxLines-1 {
+			m.cursor++
+			maxVisible := m.windowHeight - 10
+			if m.cursor >= m.scrollOffset+maxVisible {
+				m.scrollOffset = m.cursor - maxVisible + 1
 			}
 		}
 		return m, nil
 
 	case "left", "h":
-		if m.diffViewMode == DiffViewSideBySide {
-			// In side-by-side mode, left focuses on left side
-			// This is just visual feedback for which side is "active"
+		if m.diffViewMode == DiffViewSideBySide && m.hScrollOffset > 0 {
+			m.hScrollOffset--
 		}
 		return m, nil
 
 	case "right", "l":
 		if m.diffViewMode == DiffViewSideBySide {
-			// In side-by-side mode, right focuses on right side
-			// This is just visual feedback for which side is "active"
+			m.hScrollOffset++
 		}
 		return m, nil
 
 	case "g":
-		if m.diffViewMode == DiffViewUnified {
-			m.cursor = 0
-			m.scrollOffset = 0
-		} else {
-			m.leftCursor = 0
-			m.rightCursor = 0
-			m.scrollOffset = 0
-		}
+		m.cursor = 0
+		m.scrollOffset = 0
 		return m, nil
 
 	case "G":
-		if m.currentDiff != nil {
-			if m.diffViewMode == DiffViewUnified {
-				m.cursor = len(m.currentDiff.Lines) - 1
-				maxVisible := m.windowHeight - 10
-				m.scrollOffset = max(0, m.cursor-maxVisible+1)
-			} else {
-				maxLines := m.getMaxSideBySideLines()
-				m.leftCursor = maxLines - 1
-				m.rightCursor = maxLines - 1
-				maxVisible := m.windowHeight - 10
-				m.scrollOffset = max(0, m.leftCursor-maxVisible+1)
-			}
+		maxLines := m.maxDiffLines()
+		if maxLines > 0 {
+			m.cursor = maxLines - 1
+			maxVisible := m.windowHeight - 10
+			m.scrollOffset = max(0, m.cursor-maxVisible+1)
 		}
 		return m, nil
 
@@ -511,12 +504,15 @@ func (m *Model) handleDiffKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "s":
-		// Toggle between unified and side-by-side diff view
+		// Toggle between unified and side-by-side diff view; reset position
 		if m.diffViewMode == DiffViewUnified {
 			m.diffViewMode = DiffViewSideBySide
 		} else {
 			m.diffViewMode = DiffViewUnified
 		}
+		m.cursor = 0
+		m.scrollOffset = 0
+		m.hScrollOffset = 0
 		return m, nil
 
 	case "m":
@@ -838,6 +834,128 @@ func (m *Model) selectPreviousFile() {
 	}
 }
 
+// LoadGitComparison populates the model with a diff between two git states.
+// leftRef is the older git ref (e.g. "HEAD", "HEAD~1", "abc1234").
+// rightRef is the newer ref; pass "" to compare leftRef against the working tree.
+func (m *Model) LoadGitComparison(leftRef, rightRef string) error {
+	root, err := git.FindRoot()
+	if err != nil {
+		return err
+	}
+
+	statuses, err := git.ChangedFiles(root, leftRef, rightRef)
+	if err != nil {
+		return err
+	}
+	if len(statuses) == 0 {
+		return fmt.Errorf("no changes found between %s and %s", leftRef, func() string {
+			if rightRef == "" {
+				return "working tree"
+			}
+			return rightRef
+		}())
+	}
+
+	rightLabel := rightRef
+	if rightLabel == "" {
+		rightLabel = "working tree"
+	}
+
+	// Set display paths (shown in the header / input fields)
+	m.leftPath = fmt.Sprintf("git:%s", leftRef)
+	m.rightPath = rightLabel
+	m.inputLeft = m.leftPath
+	m.inputRight = rightLabel
+
+	// Synthetic directory-level FileInfo objects (used for display only)
+	m.leftFile = &file.FileInfo{Path: m.leftPath, Name: leftRef, IsDir: true}
+	m.rightFile = &file.FileInfo{Path: m.rightPath, Name: rightLabel, IsDir: true}
+
+	m.allFiles = make(map[string]*file.FileComparison)
+	m.commonFiles = make(map[string][2]*file.FileInfo)
+	m.selectedFile = ""
+
+	for _, fs := range statuses {
+		comparison := &file.FileComparison{RelativePath: fs.Path}
+
+		switch fs.Status {
+		case 'A': // Added — only exists in right (working tree or rightRef)
+			var content string
+			if rightRef == "" {
+				content, err = git.ReadWorkingTreeFile(root, fs.Path)
+			} else {
+				content, err = git.FileAtRef(root, rightRef, fs.Path)
+			}
+			if err != nil {
+				continue
+			}
+			comparison.RightFile = &file.FileInfo{
+				Path:    filepath.Join(root, fs.Path),
+				Name:    filepath.Base(fs.Path),
+				Content: content,
+				Size:    int64(len(content)),
+			}
+			comparison.Source = file.SourceRight
+
+		case 'D': // Deleted — only exists in leftRef
+			content, err := git.FileAtRef(root, leftRef, fs.Path)
+			if err != nil {
+				continue
+			}
+			comparison.LeftFile = &file.FileInfo{
+				Path:    fmt.Sprintf("git:%s:%s", leftRef, fs.Path),
+				Name:    filepath.Base(fs.Path),
+				Content: content,
+				Size:    int64(len(content)),
+			}
+			comparison.Source = file.SourceLeft
+
+		default: // Modified — exists in both
+			leftContent, err := git.FileAtRef(root, leftRef, fs.Path)
+			if err != nil {
+				continue
+			}
+			var rightContent string
+			if rightRef == "" {
+				rightContent, err = git.ReadWorkingTreeFile(root, fs.Path)
+			} else {
+				rightContent, err = git.FileAtRef(root, rightRef, fs.Path)
+			}
+			if err != nil {
+				continue
+			}
+			lf := &file.FileInfo{
+				Path:    fmt.Sprintf("git:%s:%s", leftRef, fs.Path),
+				Name:    filepath.Base(fs.Path),
+				Content: leftContent,
+				Size:    int64(len(leftContent)),
+			}
+			rf := &file.FileInfo{
+				Path:    filepath.Join(root, fs.Path),
+				Name:    filepath.Base(fs.Path),
+				Content: rightContent,
+				Size:    int64(len(rightContent)),
+			}
+			comparison.LeftFile = lf
+			comparison.RightFile = rf
+			comparison.Source = file.SourceBoth
+			m.commonFiles[fs.Path] = [2]*file.FileInfo{lf, rf}
+		}
+
+		m.allFiles[fs.Path] = comparison
+	}
+
+	// Auto-select first file
+	if len(m.allFiles) > 0 {
+		sorted := m.getSortedFiles()
+		if len(sorted) > 0 {
+			m.selectedFile = sorted[0]
+		}
+	}
+
+	return nil
+}
+
 func (m *Model) loadDiff() {
 	if m.selectedFile == "" {
 		m.errorMsg = "No file selected for comparison"
@@ -882,8 +1000,10 @@ func (m *Model) loadDiff() {
 	)
 
 	m.currentDiff = diff
+	m.sbsRows = differ.BuildSideBySideRows(diff.Lines)
 	m.cursor = 0
 	m.scrollOffset = 0
+	m.hScrollOffset = 0
 	m.errorMsg = "" // Clear any previous errors
 }
 
@@ -894,14 +1014,14 @@ func max(a, b int) int {
 	return b
 }
 
-// getMaxSideBySideLines returns the maximum number of lines for side-by-side view
-func (m *Model) getMaxSideBySideLines() int {
+// maxDiffLines returns the total navigable lines for the current view mode.
+func (m *Model) maxDiffLines() int {
+	if m.diffViewMode == DiffViewSideBySide {
+		return len(m.sbsRows)
+	}
 	if m.currentDiff == nil {
 		return 0
 	}
-
-	// For side-by-side view, we need to reconstruct the original file lines
-	// from the diff data. This is a simplified version that counts all diff lines.
 	return len(m.currentDiff.Lines)
 }
 

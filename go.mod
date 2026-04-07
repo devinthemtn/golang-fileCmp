@@ -5,7 +5,6 @@ go 1.21
 require (
 	github.com/charmbracelet/bubbletea v0.24.2
 	github.com/charmbracelet/lipgloss v0.9.1
-	github.com/sergi/go-diff v1.3.1
 )
 
 require (
