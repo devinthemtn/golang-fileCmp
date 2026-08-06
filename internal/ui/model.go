@@ -35,6 +35,16 @@ const (
 	DiffViewSideBySide
 )
 
+// fileSelectFocus represents which control has keyboard focus on the file select screen
+type fileSelectFocus int
+
+const (
+	focusInputLeft fileSelectFocus = iota
+	focusInputRight
+	focusViewDiffBtn
+	focusQuitBtn
+)
+
 // Model represents the main application state
 type Model struct {
 	// Application state
@@ -77,7 +87,7 @@ type Model struct {
 	// UI state
 	inputLeft   string
 	inputRight  string
-	focusLeft   bool
+	focus       fileSelectFocus
 	showingHelp bool
 	errorMsg    string
 
@@ -115,6 +125,21 @@ var (
 				Foreground(lipgloss.Color("#000000")).
 				Background(lipgloss.Color("#FFFF00")).
 				Padding(0, 1)
+
+	// Single-line "badge" buttons - deliberately not bordered, since a border
+	// costs two extra rows and the file-select screen is already tight on
+	// vertical space (the file list box reserves most of the terminal height).
+	buttonStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#DDDDDD")).
+			Background(lipgloss.Color("#444444")).
+			Bold(true).
+			Padding(0, 2)
+
+	focusedButtonStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#000000")).
+				Background(lipgloss.Color("#FFFF00")).
+				Bold(true).
+				Padding(0, 2)
 
 	equalLineStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("#888888"))
@@ -193,7 +218,7 @@ func New() *Model {
 		fileManager:     file.New(),
 		differ:          differ.New(),
 		merger:          merge.New(),
-		focusLeft:       true,
+		focus:           focusInputLeft,
 		commonFiles:     make(map[string][2]*file.FileInfo),
 		allFiles:        make(map[string]*file.FileComparison),
 		leftSuggIndex:   -1,
@@ -262,6 +287,29 @@ func (m *Model) handleKeyPress(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// canViewDiff reports whether there's a selected file the diff view can open
+func (m *Model) canViewDiff() bool {
+	return len(m.allFiles) > 0 && m.selectedFile != ""
+}
+
+// openDiffForSelected loads the diff for the currently selected file (or the
+// first file if none is selected yet) and switches to the diff view.
+func (m *Model) openDiffForSelected() {
+	if len(m.allFiles) == 0 {
+		return
+	}
+	if m.selectedFile == "" {
+		files := m.getSortedFiles()
+		if len(files) > 0 {
+			m.selectedFile = files[0]
+		}
+	}
+	if m.selectedFile != "" {
+		m.loadDiff()
+		m.viewMode = ViewModeDiff
+	}
+}
+
 // handleFileSelectKeys handles keys in file selection mode
 func (m *Model) handleFileSelectKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
@@ -270,40 +318,75 @@ func (m *Model) handleFileSelectKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "tab":
 		// If suggestions are showing and we have suggestions, cycle through them
-		if m.showSuggestions {
-			if m.focusLeft && len(m.leftSuggestions) > 0 {
+		onInput := m.focus == focusInputLeft || m.focus == focusInputRight
+		if onInput && m.showSuggestions {
+			if m.focus == focusInputLeft && len(m.leftSuggestions) > 0 {
 				m.leftSuggIndex = (m.leftSuggIndex + 1) % len(m.leftSuggestions)
 				return m, nil
-			} else if !m.focusLeft && len(m.rightSuggestions) > 0 {
+			} else if m.focus == focusInputRight && len(m.rightSuggestions) > 0 {
 				m.rightSuggIndex = (m.rightSuggIndex + 1) % len(m.rightSuggestions)
 				return m, nil
 			}
 		}
-		m.focusLeft = !m.focusLeft
+		// Cycle focus: left input -> right input -> view diff button (if available) -> quit button -> left input
+		switch m.focus {
+		case focusInputLeft:
+			m.focus = focusInputRight
+		case focusInputRight:
+			if m.canViewDiff() {
+				m.focus = focusViewDiffBtn
+			} else {
+				m.focus = focusQuitBtn
+			}
+		case focusViewDiffBtn:
+			m.focus = focusQuitBtn
+		case focusQuitBtn:
+			m.focus = focusInputLeft
+		}
 		m.clearSuggestions()
 		return m, nil
 
 	case "enter":
-		// If suggestions are showing, accept the selected suggestion
+		// If the quit button is focused, quit the app
+		if m.focus == focusQuitBtn {
+			return m, tea.Quit
+		}
+
+		// If the view diff button is focused, open the diff for the selected file
+		if m.focus == focusViewDiffBtn {
+			m.openDiffForSelected()
+			return m, nil
+		}
+
+		// If suggestions are showing, accept the selected suggestion. But if the
+		// suggestion is already an exact match for what's typed (e.g. the user
+		// typed a complete, valid filename), accepting it would be a no-op -
+		// fall through and load the path instead of silently swallowing Enter.
 		if m.showSuggestions {
-			if m.focusLeft && len(m.leftSuggestions) > 0 && m.leftSuggIndex >= 0 {
-				m.inputLeft = m.leftSuggestions[m.leftSuggIndex]
-				m.clearSuggestions()
-				return m, nil
-			} else if !m.focusLeft && len(m.rightSuggestions) > 0 && m.rightSuggIndex >= 0 {
-				m.inputRight = m.rightSuggestions[m.rightSuggIndex]
-				m.clearSuggestions()
-				return m, nil
+			if m.focus == focusInputLeft && len(m.leftSuggestions) > 0 && m.leftSuggIndex >= 0 {
+				suggestion := m.leftSuggestions[m.leftSuggIndex]
+				if suggestion != m.inputLeft {
+					m.inputLeft = suggestion
+					m.clearSuggestions()
+					return m, nil
+				}
+			} else if m.focus == focusInputRight && len(m.rightSuggestions) > 0 && m.rightSuggIndex >= 0 {
+				suggestion := m.rightSuggestions[m.rightSuggIndex]
+				if suggestion != m.inputRight {
+					m.inputRight = suggestion
+					m.clearSuggestions()
+					return m, nil
+				}
 			}
 		}
 
 		// Load the path
-		if m.focusLeft {
+		if m.focus == focusInputLeft {
 			if m.inputLeft != "" {
 				m.leftPath = m.inputLeft
 				m.loadLeftPath()
 			}
-		} else {
+		} else if m.focus == focusInputRight {
 			if m.inputRight != "" {
 				m.rightPath = m.inputRight
 				m.loadRightPath()
@@ -314,20 +397,7 @@ func (m *Model) handleFileSelectKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "ctrl+d":
-		if len(m.allFiles) > 0 {
-			// If no file is selected, select the first one
-			if m.selectedFile == "" {
-				files := m.getSortedFiles()
-				if len(files) > 0 {
-					m.selectedFile = files[0]
-				}
-			}
-			// Load diff for the currently selected file
-			if m.selectedFile != "" {
-				m.loadDiff()
-				m.viewMode = ViewModeDiff
-			}
-		}
+		m.openDiffForSelected()
 		return m, nil
 
 	case "?":
@@ -341,12 +411,12 @@ func (m *Model) handleFileSelectKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
-		if m.focusLeft {
+		if m.focus == focusInputLeft {
 			if len(m.inputLeft) > 0 {
 				m.inputLeft = m.inputLeft[:len(m.inputLeft)-1]
 				m.updateSuggestions()
 			}
-		} else {
+		} else if m.focus == focusInputRight {
 			if len(m.inputRight) > 0 {
 				m.inputRight = m.inputRight[:len(m.inputRight)-1]
 				m.updateSuggestions()
@@ -365,14 +435,14 @@ func (m *Model) handleFileSelectKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "up":
 		if m.showSuggestions {
-			if m.focusLeft && len(m.leftSuggestions) > 0 {
+			if m.focus == focusInputLeft && len(m.leftSuggestions) > 0 {
 				if m.leftSuggIndex <= 0 {
 					m.leftSuggIndex = len(m.leftSuggestions) - 1
 				} else {
 					m.leftSuggIndex--
 				}
 				return m, nil
-			} else if !m.focusLeft && len(m.rightSuggestions) > 0 {
+			} else if m.focus == focusInputRight && len(m.rightSuggestions) > 0 {
 				if m.rightSuggIndex <= 0 {
 					m.rightSuggIndex = len(m.rightSuggestions) - 1
 				} else {
@@ -390,10 +460,10 @@ func (m *Model) handleFileSelectKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "down":
 		if m.showSuggestions {
-			if m.focusLeft && len(m.leftSuggestions) > 0 {
+			if m.focus == focusInputLeft && len(m.leftSuggestions) > 0 {
 				m.leftSuggIndex = (m.leftSuggIndex + 1) % len(m.leftSuggestions)
 				return m, nil
-			} else if !m.focusLeft && len(m.rightSuggestions) > 0 {
+			} else if m.focus == focusInputRight && len(m.rightSuggestions) > 0 {
 				m.rightSuggIndex = (m.rightSuggIndex + 1) % len(m.rightSuggestions)
 				return m, nil
 			}
@@ -406,11 +476,14 @@ func (m *Model) handleFileSelectKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case "/":
-		if len(m.allFiles) > 0 {
+		// Only steal "/" for the file-list filter once files are loaded and
+		// neither path input is focused; otherwise it's a normal path character.
+		if len(m.allFiles) > 0 && m.focus != focusInputLeft && m.focus != focusInputRight {
 			m.filterActive = true
 			m.filterQuery = ""
+			return m, nil
 		}
-		return m, nil
+		fallthrough
 
 	default:
 		if m.filterActive {
@@ -420,11 +493,25 @@ func (m *Model) handleFileSelectKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
+		if m.focus == focusQuitBtn {
+			// Space also activates the focused quit button, like enter
+			if msg.String() == " " {
+				return m, tea.Quit
+			}
+			return m, nil
+		}
+		if m.focus == focusViewDiffBtn {
+			// Space also activates the focused view diff button, like enter
+			if msg.String() == " " {
+				m.openDiffForSelected()
+			}
+			return m, nil
+		}
 		// Add character to appropriate input
 		if len(msg.String()) == 1 {
-			if m.focusLeft {
+			if m.focus == focusInputLeft {
 				m.inputLeft += msg.String()
-			} else {
+			} else if m.focus == focusInputRight {
 				m.inputRight += msg.String()
 			}
 			m.updateSuggestions()
@@ -772,6 +859,32 @@ func (m *Model) updateCommonFiles() {
 	}
 }
 
+// displayNameForFile returns a human-readable label for a file-list entry.
+// Entries are normally keyed by their path relative to the compared roots,
+// but when both roots are single files (not directories) that key collapses
+// to "." - in that case show the actual filename(s) instead.
+func (m *Model) displayNameForFile(relPath string) string {
+	if relPath != "." {
+		return relPath
+	}
+	comparison, exists := m.allFiles[relPath]
+	if !exists {
+		return relPath
+	}
+	switch comparison.Source {
+	case file.SourceBoth:
+		if comparison.LeftFile.Name == comparison.RightFile.Name {
+			return comparison.LeftFile.Name
+		}
+		return comparison.LeftFile.Name + " ↔ " + comparison.RightFile.Name
+	case file.SourceLeft:
+		return comparison.LeftFile.Name
+	case file.SourceRight:
+		return comparison.RightFile.Name
+	}
+	return relPath
+}
+
 func (m *Model) getSortedFiles() []string {
 	files := make([]string, 0, len(m.allFiles))
 	for relPath := range m.allFiles {
@@ -1062,7 +1175,7 @@ func (m *Model) SetRightPath(path string) {
 // Path suggestion methods
 
 func (m *Model) updateSuggestions() {
-	if m.focusLeft {
+	if m.focus == focusInputLeft {
 		m.leftSuggestions = m.generateSuggestions(m.inputLeft)
 		m.leftSuggIndex = 0
 		if len(m.leftSuggestions) == 0 {

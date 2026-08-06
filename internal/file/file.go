@@ -191,6 +191,19 @@ type FileComparison struct {
 	Source       FileSource
 }
 
+// relativeKey returns the key used to match a file between the left and right
+// trees: its path relative to root. When root is a single file being compared
+// directly (not a directory), this is always "." on both sides - that's what
+// pairs the two files together as a single comparison regardless of whether
+// their actual filenames match.
+func relativeKey(root, file *FileInfo) (string, bool) {
+	rel, err := filepath.Rel(root.Path, file.Path)
+	if err != nil {
+		return "", false
+	}
+	return rel, true
+}
+
 // FindCommonFiles finds files that exist in both file trees with the same relative path
 func FindCommonFiles(left, right *FileInfo) map[string][2]*FileInfo {
 	leftFiles := make(map[string]*FileInfo)
@@ -198,15 +211,13 @@ func FindCommonFiles(left, right *FileInfo) map[string][2]*FileInfo {
 
 	// Get all text files and create relative path maps
 	for _, file := range left.GetTextFiles() {
-		rel, err := filepath.Rel(left.Path, file.Path)
-		if err == nil {
+		if rel, ok := relativeKey(left, file); ok {
 			leftFiles[rel] = file
 		}
 	}
 
 	for _, file := range right.GetTextFiles() {
-		rel, err := filepath.Rel(right.Path, file.Path)
-		if err == nil {
+		if rel, ok := relativeKey(right, file); ok {
 			rightFiles[rel] = file
 		}
 	}
@@ -229,15 +240,13 @@ func FindAllFiles(left, right *FileInfo) map[string]*FileComparison {
 
 	// Get all text files and create relative path maps
 	for _, file := range left.GetTextFiles() {
-		rel, err := filepath.Rel(left.Path, file.Path)
-		if err == nil {
+		if rel, ok := relativeKey(left, file); ok {
 			leftFiles[rel] = file
 		}
 	}
 
 	for _, file := range right.GetTextFiles() {
-		rel, err := filepath.Rel(right.Path, file.Path)
-		if err == nil {
+		if rel, ok := relativeKey(right, file); ok {
 			rightFiles[rel] = file
 		}
 	}

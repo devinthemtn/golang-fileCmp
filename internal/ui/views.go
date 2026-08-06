@@ -40,19 +40,22 @@ func (m *Model) renderFileSelectView() string {
 	}
 
 	var leftInput, rightInput string
-	if m.focusLeft {
+	if m.focus == focusInputLeft {
 		leftInput = focusedInputStyle.Width(maxInputWidth).Render(leftDisplay + "│")
 		rightInput = inputStyle.Width(maxInputWidth).Render(rightDisplay)
-	} else {
+	} else if m.focus == focusInputRight {
 		leftInput = inputStyle.Width(maxInputWidth).Render(leftDisplay)
 		rightInput = focusedInputStyle.Width(maxInputWidth).Render(rightDisplay + "│")
+	} else {
+		leftInput = inputStyle.Width(maxInputWidth).Render(leftDisplay)
+		rightInput = inputStyle.Width(maxInputWidth).Render(rightDisplay)
 	}
 
 	b.WriteString(leftLabel + leftInput)
 	b.WriteString("\n")
 
 	// Show suggestions for left path if focused and available
-	if m.focusLeft && m.showSuggestions && len(m.leftSuggestions) > 0 {
+	if m.focus == focusInputLeft && m.showSuggestions && len(m.leftSuggestions) > 0 {
 		b.WriteString(m.renderSuggestions(m.leftSuggestions, m.leftSuggIndex))
 		b.WriteString("\n")
 	}
@@ -61,11 +64,32 @@ func (m *Model) renderFileSelectView() string {
 	b.WriteString("\n")
 
 	// Show suggestions for right path if focused and available
-	if !m.focusLeft && m.showSuggestions && len(m.rightSuggestions) > 0 {
+	if m.focus == focusInputRight && m.showSuggestions && len(m.rightSuggestions) > 0 {
 		b.WriteString(m.renderSuggestions(m.rightSuggestions, m.rightSuggIndex))
 		b.WriteString("\n")
 	}
 
+	b.WriteString("\n")
+
+	// Buttons - part of the Tab focus cycle (Left Path -> Right Path -> View Diff -> Quit)
+	var quitButton string
+	if m.focus == focusQuitBtn {
+		quitButton = focusedButtonStyle.Render("Quit")
+	} else {
+		quitButton = buttonStyle.Render("Quit")
+	}
+
+	if m.canViewDiff() {
+		var viewDiffButton string
+		if m.focus == focusViewDiffBtn {
+			viewDiffButton = focusedButtonStyle.Render("View Diff")
+		} else {
+			viewDiffButton = buttonStyle.Render("View Diff")
+		}
+		b.WriteString(lipgloss.JoinHorizontal(lipgloss.Top, viewDiffButton, "  ", quitButton))
+	} else {
+		b.WriteString(quitButton)
+	}
 	b.WriteString("\n")
 
 	// Status information - truncate paths if too long
@@ -111,7 +135,7 @@ func (m *Model) renderFileSelectView() string {
 		}
 
 		if m.selectedFile != "" {
-			selectedPath := m.selectedFile
+			selectedPath := m.displayNameForFile(m.selectedFile)
 
 			// Truncate path if too long for display
 			maxPathWidth := m.windowWidth - 16 // Leave space for "► Selected: "
@@ -184,20 +208,20 @@ func (m *Model) renderFileSelectView() string {
 		if len(m.allFiles) > 0 {
 			// When files are loaded, emphasize the comparison functionality
 			if m.windowWidth > 100 {
-				helpText = "Tab: Switch input • Enter: Load path • ↑↓: Navigate files • Ctrl+D: Compare • /: Filter • c: Copy • ?: Help • Q: Quit"
+				helpText = "Tab: Switch input/View Diff/Quit • Enter: Load path or activate button • ↑↓: Navigate files • Ctrl+D: Compare • /: Filter • ?: Help • Q: Quit"
 			} else if m.windowWidth > 80 {
-				helpText = "Tab: Switch • Enter: Load • ↑↓: Navigate • Ctrl+D: Compare • /: Filter • c: Copy • ?: Help • Q: Quit"
+				helpText = "Tab: Switch/Diff/Quit • Enter: Load/Activate • ↑↓: Navigate • Ctrl+D: Compare • /: Filter • ?: Help • Q: Quit"
 			} else if m.windowWidth > 60 {
-				helpText = "Tab:Switch Enter:Load ↑↓:Nav Ctrl+D:Compare /:Filter c:Copy ?:Help Q:Quit"
+				helpText = "Tab:Switch/Diff/Quit Enter:Load/Activate ↑↓:Nav Ctrl+D:Compare /:Filter ?:Help Q:Quit"
 			} else {
 				helpText = "↑↓:Select Ctrl+D:Compare /:Filter Q:Quit"
 			}
 		} else {
 			// When no files are loaded, emphasize the input functionality
 			if m.windowWidth > 80 {
-				helpText = "Tab: Switch input • Enter: Load path • ↑↓: Navigate suggestions • ?: Help • Q: Quit"
+				helpText = "Tab: Switch input/Quit button • Enter: Load path • ↑↓: Navigate suggestions • ?: Help • Q: Quit"
 			} else if m.windowWidth > 60 {
-				helpText = "Tab: Switch • Enter: Load • ↑↓: Navigate • ?: Help • Q: Quit"
+				helpText = "Tab: Switch/Quit • Enter: Load • ↑↓: Navigate • ?: Help • Q: Quit"
 			} else {
 				helpText = "Tab:Switch Enter:Load ?:Help Q:Quit"
 			}
@@ -328,7 +352,7 @@ func (m *Model) renderFileList() string {
 
 		// Truncate filename if too long.
 		// Use lipgloss.Width to measure rendered strings — len() counts ANSI escape bytes too.
-		displayPath := relPath
+		displayPath := m.displayNameForFile(relPath)
 		baseWidth := 4 + lipgloss.Width(sizeInfo) + lipgloss.Width(sourceInfo)
 		if len(displayPath) > maxFileWidth-baseWidth {
 			maxPathWidth := maxFileWidth - baseWidth - 3 // 3 for "..."
@@ -347,14 +371,23 @@ func (m *Model) renderFileList() string {
 	}
 
 	content := strings.Join(items, "\n")
+	contentHeight := len(items)
 
 	// Add scroll indicator if needed
 	if len(allFiles) > availableHeight {
 		scrollInfo := fmt.Sprintf("\nShowing %d-%d of %d files", startIndex+1, endIndex, len(allFiles))
 		content += helpStyle.Render(scrollInfo)
+		contentHeight += 2 // blank line + scroll indicator line
 	}
 
-	return fileListStyle.Width(m.windowWidth - 4).Height(availableHeight + 2).Render(content)
+	// Size the box to its actual content instead of always reserving the
+	// full available height - a fixed-height box padded with blank lines
+	// pushes the rest of the screen (title, path inputs) past the terminal
+	// height and off-screen once files are loaded.
+	if contentHeight < 1 {
+		contentHeight = 1
+	}
+	return fileListStyle.Width(m.windowWidth - 4).Height(contentHeight).Render(content)
 }
 
 // formatFileSize formats file size in human readable format
