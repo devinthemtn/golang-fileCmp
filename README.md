@@ -61,6 +61,14 @@ Prerequisites: Go 1.25+, Node.js (for the Vite-built frontend), and the Wails v2
 go install github.com/wailsapp/wails/v2/cmd/wails@latest
 ```
 
+**Linux only:** Wails also needs GTK/WebKit *development* headers to compile against (having the runtime libraries installed isn't enough — `pkg-config` needs the `-dev` packages, or the Go build fails with a cgo/`pkg-config` error). On Debian/Ubuntu:
+
+```bash
+sudo apt install libgtk-3-dev libwebkit2gtk-4.1-dev   # or libwebkit2gtk-4.0-dev, see below
+```
+
+Run `wails doctor` to check what's missing on your system.
+
 Then, from the repo root:
 
 ```bash
